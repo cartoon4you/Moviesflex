@@ -290,6 +290,14 @@ export default function WorldCinemaContent() {
 
   /* ---------- Open media ---------- */
   const openMedia = useCallback(async (id: number, type: string) => {
+    // 1. Find basic data from current list immediately
+    const basicItem = movies.find(m => m.id === id);
+    if (basicItem) {
+        setSelectedMedia({ ...basicItem, mediaType: type });
+        setIsPlayerActive(true);
+    }
+    
+    // 2. Fetch full details in background
     setPlayerLoading(true);
     const details = await fetchTMDB(
       `/${type}/${id}?language=ar-SA&append_to_response=external_ids,credits,videos`
@@ -298,6 +306,7 @@ export default function WorldCinemaContent() {
 
     setSelectedMedia({ ...details, mediaType: type });
 
+    // Handle trailer and servers
     if (type === 'tv') {
       const filteredSeasons = (details.seasons || []).filter((s: any) => s.season_number > 0);
       setSeasons(filteredSeasons);
@@ -307,7 +316,6 @@ export default function WorldCinemaContent() {
         const epData = await fetchTMDB(`/tv/${id}/season/${firstSeason}?language=ar-SA`);
         setEpisodes(epData?.episodes || []);
         setSelectedEpisode(1);
-        // ✅ use `details` (fresh) + current serverProvider (not hard-coded)
         setPlayerUrl(getEmbedUrl('tv', details, firstSeason, 1, serverProvider));
       }
     } else {
@@ -321,7 +329,7 @@ export default function WorldCinemaContent() {
     setIsPlayerActive(true);
     setPlayerLoading(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [fetchTMDB, getEmbedUrl, serverProvider]);
+  }, [fetchTMDB, getEmbedUrl, serverProvider, movies]);
 
   /* ---------- Server change ---------- */
   const handleServerChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {

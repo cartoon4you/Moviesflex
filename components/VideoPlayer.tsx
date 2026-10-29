@@ -188,16 +188,23 @@ export default function VideoPlayer({
       }
     } else {
       // Native Video (MP4 / WebM)
+      video.preload = 'metadata';
       video.src = streamUrl;
+      console.log(`[Player] ${Date.now()} Src set: ${streamUrl}`);
       video.load();
 
-      const handleCanPlay = () => {
+      const handleMetadata = () => {
+        console.log(`[Player] ${Date.now()} loadedmetadata`);
         setIsLoading(false);
-        // Start playback with muted autoplay
         safePlay(video);
       };
+      
+      const handlePlaying = () => {
+        console.log(`[Player] ${Date.now()} playing`);
+      };
 
-      const handleError = () => {
+      const handleError = (e: any) => {
+        console.error(`[Player] ${Date.now()} error:`, e);
         // If direct playback fails (due to CDN hotlink/CORS rules on Downet/Akwam),
         // automatically fallback to the optimized streaming proxy without failing
         if (!useProxy && proxyOverride !== false) {
@@ -217,11 +224,13 @@ export default function VideoPlayer({
         setErrorMsg('تعذر تشغيل هذا الرابط حالياً. قد تكون صلاحية رابط البث المؤقت انتهت أو السيرفر محجوب.');
       };
 
-      video.addEventListener('canplay', handleCanPlay);
+      video.addEventListener('loadedmetadata', handleMetadata);
+      video.addEventListener('playing', handlePlaying);
       video.addEventListener('error', handleError);
 
       return () => {
-        video.removeEventListener('canplay', handleCanPlay);
+        video.removeEventListener('loadedmetadata', handleMetadata);
+        video.removeEventListener('playing', handlePlaying);
         video.removeEventListener('error', handleError);
       };
     }
