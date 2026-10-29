@@ -446,7 +446,7 @@ export default function WorldCinemaContent() {
             >
               <span className="w-8 h-8 rounded-lg grid place-items-center bg-[#e50914] text-[14px]">▶</span>
               <span>
-                movies<span className="text-[#e50914]">io</span>
+                arab<span className="text-[#e50914]">flex</span>
               </span>
             </a>
 

@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { LogIn, LogOut, User, Shield, Sparkles, Heart, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import YemenflexLogo from '@/components/YemenflexLogo';
+import ArabflexLogo from '@/components/ArabflexLogo';
 import PreloadSpeedBadge from '@/components/PreloadSpeedBadge';
 
 export default function Footer() {
@@ -104,9 +104,9 @@ export default function Footer() {
         {/* Links and Copyright Grid */}
         <div className="flex flex-col md:flex-row items-center justify-between gap-6 pt-4 border-t border-neutral-900">
           <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-right">
-            <YemenflexLogo size="sm" />
+            <ArabflexLogo size="sm" />
             <p className="text-[11px] text-neutral-400 sm:border-r sm:border-neutral-800 sm:pr-4">
-              منصة يمن فلکس (YemenFlex) - بث فائق الجودة، سيرفرات سريعة وبدون إعلانات.
+              منصة عرب فليكس (arabflex) - بث فائق الجودة، سيرفرات سريعة وبدون إعلانات.
             </p>
           </div>
 

@@ -3,7 +3,7 @@
 import React from 'react';
 import Image from 'next/image';
 
-interface YemenflexLogoProps {
+interface ArabflexLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
   showSubtitle?: boolean;
   iconOnly?: boolean;
@@ -11,13 +11,13 @@ interface YemenflexLogoProps {
   priority?: boolean;
 }
 
-export default function YemenflexLogo({
+export default function ArabflexLogo({
   size = 'md',
   showSubtitle = true,
   iconOnly = false,
   className = '',
   priority = false,
-}: YemenflexLogoProps) {
+}: ArabflexLogoProps) {
   // Dimensions mapping
   const dimensions = {
     sm: {
@@ -52,7 +52,7 @@ export default function YemenflexLogo({
 
   return (
     <div
-      id={`yemenflex-logo-${size}`}
+      id={`arabflex-logo-${size}`}
       className={`inline-flex items-center ${dimensions.gap} select-none ${className}`}
       dir="ltr"
     >
@@ -61,8 +61,8 @@ export default function YemenflexLogo({
         className={`relative ${dimensions.iconClass} flex-shrink-0 rounded-xl overflow-hidden bg-neutral-900 shadow-md shadow-red-950/40 ring-1 ring-red-600/30 group-hover:ring-red-500/60 transition-all duration-300`}
       >
         <Image
-          src="/yemenflex-icon.png"
-          alt="Yemenflex Logo"
+          src="/arabflex-icon.png"
+          alt="arabflex Logo"
           width={dimensions.icon}
           height={dimensions.icon}
           priority={priority}
@@ -74,12 +74,9 @@ export default function YemenflexLogo({
       {!iconOnly && (
         <div className="flex flex-col text-left leading-tight">
           <div className="flex items-center tracking-tight">
-            {/* Red Y + White emenflex */}
-            <span className={`${dimensions.titleClass} text-red-600 font-extrabold drop-shadow-[0_2px_8px_rgba(220,38,38,0.5)]`}>
-              Y
-            </span>
+            {/* arabflex */}
             <span className={`${dimensions.titleClass} text-white font-extrabold tracking-normal`}>
-              emenflex
+              arab<span className="text-red-600">flex</span>
             </span>
           </div>
 

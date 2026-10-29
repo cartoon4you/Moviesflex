@@ -27,7 +27,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useWatchlist } from '@/contexts/WatchlistContext';
 import { CATEGORIES } from '@/lib/catalog-data';
 import { useIsMounted } from '@/hooks/use-mounted';
-import YemenflexLogo from '@/components/YemenflexLogo';
+import ArabflexLogo from '@/components/ArabflexLogo';
 
 export default function Navbar() {
   const router = useRouter();
@@ -129,9 +129,9 @@ export default function Navbar() {
             href="/"
             id="brand-logo"
             className="group flex items-center transition-transform active:scale-95"
-            aria-label="الصفحة الرئيسية - يمن فلکس Yemenflex"
+            aria-label="الصفحة الرئيسية - عرب فليکس Arabflex"
           >
-            <YemenflexLogo size="md" priority />
+            <ArabflexLogo size="md" priority />
           </Link>
 
           {/* Desktop Navigation Links (Large Screens) */}

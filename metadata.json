@@ -1,6 +1,6 @@
 {
-  "name": "Remix yemeniflex",
-  "description": "Imported from GitHub: cartoon4you/yemeniflex",
+  "name": "arabflex",
+  "description": "arabflex cinema platform",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
