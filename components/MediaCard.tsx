@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Star, Bookmark, Play, Check, Zap } from 'lucide-react';
 import { MediaItem } from '@/lib/types';
 import { useWatchlist } from '@/contexts/WatchlistContext';
-import { preloadImage, preloadVideoChunk, preloadMediaDetails } from '@/lib/preload-manager';
+import { preloadImage, preloadMediaDetails } from '@/lib/preload-manager';
 
 interface MediaCardProps {
   item: MediaItem;
@@ -45,12 +45,8 @@ export default function MediaCard({ item }: MediaCardProps) {
     if (item.poster) preloadImage(item.poster, 'high');
     if (item.banner) preloadImage(item.banner, 'auto');
 
-    // B. Preload video chunk of primary server if known
-    if (item.servers && item.servers.length > 0 && item.servers[0]?.url) {
-      preloadVideoChunk(item.servers[0].url, item.servers[0].referer);
-    }
-
-    // C. Preload complete watch details via API
+    // Keep lightweight details warm; do not download video bytes just because a card is hovered/touched.
+    // Video requests compete with page images and user-initiated navigation on slower connections.
     preloadMediaDetails(item.id);
   };
 
