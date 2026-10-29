@@ -111,7 +111,7 @@ const pendingRequests = new Map<string, Promise<any>>();
 // ==============================================================================
 // 2. OPTIMIZED NETWORK CONNECTIONS & TIMEOUTS
 // ==============================================================================
-export const STANDARD_TIMEOUT_MS = 4000; // Strict 4,000ms timeout for standard HTML to avoid chunk & page load stalls
+export const STANDARD_TIMEOUT_MS = 2000; // Reduced to 2,000ms for faster UI response
 export const DEEP_STREAM_TIMEOUT_MS = 8000; // Strict 8,000ms timeout for watch page & stream extraction
 
 /**
@@ -262,6 +262,7 @@ export async function getHomeContent(): Promise<{
     saveToCache(cacheKey, cachedFs, 15 * 60 * 1000);
     return cachedFs;
   }
+
 
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey);
