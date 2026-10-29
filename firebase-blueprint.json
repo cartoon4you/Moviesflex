@@ -1,110 +1,39 @@
 {
   "entities": {
-    "UserProfile": {
-      "title": "UserProfile",
+    "User": {
+      "title": "User",
       "description": "User profile information",
       "type": "object",
       "properties": {
-        "userId": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "email": {
-          "type": "string",
-          "maxLength": 256
-        },
-        "displayName": {
-          "type": "string",
-          "maxLength": 150
-        },
-        "photoURL": {
-          "type": "string",
-          "maxLength": 1000
-        },
-        "createdAt": {
-          "type": "string",
-          "maxLength": 100
-        }
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "emailVerified": { "type": "boolean" },
+        "displayName": { "type": "string" }
       },
-      "required": ["userId", "email"]
+      "required": ["uid", "email"]
     },
-    "WatchlistItem": {
-      "title": "WatchlistItem",
-      "description": "An item saved to the user's personal watchlist",
+    "Watchlist": {
+      "title": "Watchlist",
+      "description": "User's watchlist items",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "maxLength": 256
-        },
-        "title": {
-          "type": "string",
-          "maxLength": 300
-        },
-        "poster": {
-          "type": "string",
-          "maxLength": 1000
-        },
-        "rating": {
-          "type": "string",
-          "maxLength": 50
-        },
-        "year": {
-          "type": "string",
-          "maxLength": 50
-        },
-        "type": {
-          "type": "string",
-          "maxLength": 50
-        },
-        "userId": {
-          "type": "string",
-          "maxLength": 128
-        },
-        "addedAt": {
-          "type": "string",
-          "maxLength": 100
+        "userId": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "type": "object" }
         }
       },
-      "required": ["id", "title", "userId"]
-    },
-    "MediaCache": {
-      "title": "MediaCache",
-      "description": "Cached scraping results with TTL expiration timestamp",
-      "type": "object",
-      "properties": {
-        "key": {
-          "type": "string",
-          "maxLength": 512
-        },
-        "data": {
-          "type": "string",
-          "description": "JSON stringified media data"
-        },
-        "expiresAt": {
-          "type": "number",
-          "description": "Expiration timestamp in epoch ms"
-        },
-        "updatedAt": {
-          "type": "string",
-          "maxLength": 100
-        }
-      },
-      "required": ["key", "data", "expiresAt"]
+      "required": ["userId", "items"]
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "UserProfile",
-      "description": "User profile document storing basic account metadata"
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
     },
-    "/users/{userId}/watchlist/{itemId}": {
-      "schema": "WatchlistItem",
-      "description": "Items added by the user to their personal watchlist"
-    },
-    "/media_cache/{cacheId}": {
-      "schema": "MediaCache",
-      "description": "Persistent scrape cache entries for home content, media details, search, and streams"
+    "watchlists/{userId}": {
+      "schema": "Watchlist",
+      "description": "User's personal watchlist"
     }
   }
 }

@@ -69,7 +69,15 @@ export default function WorldCinemaContent() {
   const [selectedEpisode, setSelectedEpisode] = useState<number>(1);
 
   // المشغل والقوائم
-  const [serverProvider, setServerProvider] = useState<string>('vidsrc');
+  const [serverProvider, setServerProvider] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(SERVER_STORAGE_KEY);
+        if (saved && SERVERS.some((s) => s.id === saved)) return saved;
+      } catch {}
+    }
+    return 'vidsrc';
+  });
   const [playerUrl, setPlayerUrl] = useState<string>('');
   const [isPlayerActive, setIsPlayerActive] = useState<boolean>(false);
   const [playerLoading, setPlayerLoading] = useState<boolean>(false);
@@ -90,12 +98,6 @@ export default function WorldCinemaContent() {
   }, []);
 
   /* ---------- Persist server choice ---------- */
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(SERVER_STORAGE_KEY);
-      if (saved && SERVERS.some((s) => s.id === saved)) setServerProvider(saved);
-    } catch {}
-  }, []);
   useEffect(() => {
     try { localStorage.setItem(SERVER_STORAGE_KEY, serverProvider); } catch {}
   }, [serverProvider]);
