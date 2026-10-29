@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Play, Bookmark, Star, ChevronLeft, ChevronRight, Check, Sparkles, Zap } from 'lucide-react';
 import { MediaItem } from '@/lib/types';
 import { useWatchlist } from '@/contexts/WatchlistContext';
-import { preloadImage, preloadVideoChunk, preloadMediaDetails } from '@/lib/preload-manager';
+import { preloadImage, preloadMediaDetails } from '@/lib/preload-manager';
 
 interface HeroSliderProps {
   items: MediaItem[];
@@ -27,9 +27,7 @@ export default function HeroSlider({ items }: HeroSliderProps) {
   const handleWarmWatch = useCallback(() => {
     if (!current) return;
     preloadMediaDetails(current.id);
-    if (current.servers?.[0]?.url) {
-      preloadVideoChunk(current.servers[0].url, current.servers[0].referer);
-    }
+
   }, [current]);
 
   // Predictive Preloading: Preload the next & previous slide images and current video stream
@@ -51,9 +49,7 @@ export default function HeroSlider({ items }: HeroSliderProps) {
     // Preload current slide's video and watch details in the background
     if (currentItem) {
       preloadMediaDetails(currentItem.id);
-      if (currentItem.servers?.[0]?.url) {
-        preloadVideoChunk(currentItem.servers[0].url, currentItem.servers[0].referer);
-      }
+
     }
   }, [currentIndex, slides]);
 
