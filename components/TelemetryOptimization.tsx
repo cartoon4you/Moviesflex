@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { SAMPLE_CATALOG } from '@/lib/catalog-data';
-import { preloadImage, preloadMediaDetails } from '@/lib/preload-manager';
+import { preloadImage } from '@/lib/preload-manager';
 
 /**
  * Optimizes network performance and prevents resource contention by:
@@ -135,13 +134,12 @@ export default function TelemetryOptimization() {
         }
       });
 
-      // Preload top 4 featured hero items in idle state
-      const topItems = SAMPLE_CATALOG.slice(0, 4);
-      topItems.forEach((item) => {
-        if (item.poster) preloadImage(item.poster, 'auto');
-        if (item.banner) preloadImage(item.banner, 'low');
-        if (item.id) preloadMediaDetails(item.id);
-      });
+      // Warm only a small number of non-critical images while idle.
+      // Do not issue detail/API requests for sample items on every page load.
+      const idleImages = [
+        'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600',
+      ];
+      idleImages.forEach((url) => preloadImage(url, 'low'));
     }, 2000);
 
     return () => {
