@@ -1,0 +1,321 @@
+import { NextRequest } from 'next/server';
+import http from 'http';
+import https from 'https';
+import { URL } from 'url';
+import { Readable } from 'stream';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+interface UpstreamResult {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  stream: Readable;
+}
+
+/**
+ * Robust Upstream Fetcher (Optimized for Akwam / Downet CDNs)
+ * Features:
+ * - Strict 10s overall deadline (prevents Cloud Run 196s timeout hangs)
+ * - Auto-detects and rejects upstream 4xx/5xx errors or HTML error pages
+ * - Smooth HTTP streaming without buffering
+ */
+function fetchUpstream(
+  targetUrl: string,
+  baseHeaders: Record<string, string>,
+  maxRedirects = 5,
+  startTime = Date.now()
+): Promise<UpstreamResult> {
+  const MAX_OVERALL_TIMEOUT = 10000; // 10 seconds total across all redirects
+
+  return new Promise((resolve, reject) => {
+    if (Date.now() - startTime > MAX_OVERALL_TIMEOUT) {
+      return reject(new Error('انتهت مهلة الاتصال الإجمالية بالسيرفر المصدر (Global Timeout)'));
+    }
+
+    try {
+      const parsedUrl = new URL(targetUrl);
+      const isHttps = parsedUrl.protocol === 'https:';
+      const client = isHttps ? https : http;
+
+      const remainingTime = Math.max(2000, MAX_OVERALL_TIMEOUT - (Date.now() - startTime));
+
+      // تحديث هيدر Host ليتطابق دائماً مع الخادم الهدف
+      const activeHeaders = { 
+        ...baseHeaders,
+        Host: parsedUrl.host 
+      };
+
+      const req = client.request(
+        targetUrl,
+        {
+          method: 'GET',
+          headers: activeHeaders,
+          rejectUnauthorized: false, // تجاوز مشاكل الشهادات الذاتية على بعض خوادم CDN الفرعية
+          timeout: remainingTime,
+        },
+        (res) => {
+          // التعامل مع إعادة التوجيه (Redirects)
+          if (
+            res.statusCode &&
+            [301, 302, 303, 307, 308].includes(res.statusCode) &&
+            res.headers.location &&
+            maxRedirects > 0
+          ) {
+            const redirectUrl = new URL(res.headers.location, targetUrl).toString();
+            res.resume(); // تحرير المقبس لمنع تسريب الذاكرة
+
+            const updatedHeaders = { ...baseHeaders };
+            updatedHeaders['Referer'] = targetUrl;
+
+            return fetchUpstream(redirectUrl, updatedHeaders, maxRedirects - 1, startTime)
+              .then(resolve)
+              .catch(reject);
+          }
+
+          // إذا أرجع السيرفر المصدر خطأ (مثل 403 أو 500 أو صفحة HTML تفيد بانتهاء الرابط)
+          if (res.statusCode && res.statusCode >= 400) {
+            res.resume();
+            return reject(new Error(`السيرفر المصدر أرجع رمز الخطأ (${res.statusCode})`));
+          }
+
+          const cType = (res.headers['content-type'] || '').toLowerCase();
+          if (cType.includes('text/html') || cType.includes('application/json')) {
+            res.resume();
+            return reject(new Error('السيرفر المصدر أرجع صفحة نصية بدلاً من دفق الفيديو'));
+          }
+
+          resolve({
+            statusCode: res.statusCode || 200,
+            headers: res.headers,
+            stream: res,
+          });
+        }
+      );
+
+      req.on('timeout', () => {
+        req.destroy(new Error('انتهت مهلة استجابة السيرفر المصدر (Socket Timeout)'));
+      });
+
+      req.on('error', (err) => {
+        reject(err);
+      });
+
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+export async function GET(request: NextRequest) {
+  const videoUrl = request.nextUrl.searchParams.get('url');
+
+  if (!videoUrl) {
+    return new Response(JSON.stringify({ error: 'المعامل url مفقود' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let parsedTarget: URL;
+  try {
+    parsedTarget = new URL(videoUrl);
+  } catch {
+    return new Response(JSON.stringify({ error: 'صيغة الرابط غير صحيحة' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // التحقق من النطاقات المسموح بها إذا تم تحديد STREAM_ALLOWED_HOSTS
+  const allowedHostsStr = process.env.STREAM_ALLOWED_HOSTS;
+  if (allowedHostsStr) {
+    const allowedHosts = allowedHostsStr
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (allowedHosts.length > 0) {
+      const targetHost = parsedTarget.hostname.toLowerCase();
+      const isAllowed = allowedHosts.some((allowed) => {
+        if (allowed.startsWith('.')) {
+          return targetHost.endsWith(allowed) || targetHost === allowed.slice(1);
+        }
+        return targetHost === allowed || targetHost.endsWith(`.${allowed}`);
+      });
+
+      if (!isAllowed) {
+        return new Response(
+          JSON.stringify({
+            error: `النطاق ${targetHost} غير مسموح به في إعدادات البث (STREAM_ALLOWED_HOSTS)`,
+          }),
+          {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+    }
+  }
+
+  try {
+    const rangeHeader = request.headers.get('range');
+
+    const userAgent =
+      process.env.SCRAPER_USER_AGENT ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+    const baseUrl = process.env.AKWAM_BASE_URL || 'https://akwam.ss';
+    let origin = 'https://akwam.ss';
+    try {
+      origin = new URL(baseUrl).origin;
+    } catch {
+      // fallback
+    }
+
+    // بناء الهيدرز المطلوبة للمطابقة مع طلبات المتصفح الشائعة
+    const headersToSend: Record<string, string> = {
+      'User-Agent': userAgent,
+      'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+      'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'identity', // إلغاء الضغط لضبط حسابات Byte Ranges
+      'Connection': 'keep-alive',
+      'Sec-Fetch-Dest': 'video',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'cross-site',
+      'Referer': `${origin}/`,
+      'Origin': origin,
+    };
+
+    if (rangeHeader) {
+      headersToSend['Range'] = rangeHeader;
+    }
+
+    const { statusCode, headers: upstreamHeaders, stream } = await fetchUpstream(
+      videoUrl,
+      headersToSend
+    );
+
+    // إلغاء الدفق فور إغلاق المستخدم للمشغل أو الخروج من الصفحة
+    if (request.signal) {
+      if (request.signal.aborted) {
+        stream.destroy();
+      } else {
+        request.signal.addEventListener('abort', () => {
+          try {
+            stream.destroy();
+          } catch {
+            // Ignore stream destruction error
+          }
+        });
+      }
+    }
+
+    // تحديد نوع المحتوى تلقائياً (دعم كامل لمشغل المتصفح HTML5)
+    let contentType = upstreamHeaders['content-type'] as string | undefined;
+    const lowerUrl = videoUrl.toLowerCase();
+    if (!contentType || contentType === 'application/octet-stream' || contentType === 'video/x-matroska') {
+      if (lowerUrl.includes('.m3u8')) contentType = 'application/vnd.apple.mpegurl';
+      else if (lowerUrl.includes('.webm')) contentType = 'video/webm';
+      else contentType = 'video/mp4'; // تمرير video/mp4 ليتمكن محرك المتصفح من تشغيل وفك ترميز الفيديو مباشرة
+    }
+
+    // تجهيز الهيدرز المتوافقة مع CORS والـ HTML5 Players
+    const responseHeaders = new Headers();
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
+    responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Type');
+    responseHeaders.set('Accept-Ranges', 'bytes');
+    responseHeaders.set('Content-Type', contentType);
+    // تمكين التخزين المؤقت في المتصفح لدعم ميزة التحميل المسبق فائقة السرعة (Preload Caching)
+    responseHeaders.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+
+    if (upstreamHeaders['content-length']) {
+      responseHeaders.set('Content-Length', String(upstreamHeaders['content-length']));
+    }
+
+    if (upstreamHeaders['content-range']) {
+      responseHeaders.set('Content-Range', String(upstreamHeaders['content-range']));
+    }
+
+    // Handle HLS .m3u8 playlist segment URL rewriting
+    const isM3U8 = (contentType && contentType.includes('mpegurl')) || lowerUrl.includes('.m3u8');
+    if (isM3U8) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      const playlistText = Buffer.concat(chunks).toString('utf-8');
+      const baseObj = new URL(videoUrl);
+
+      const rewrittenPlaylist = playlistText
+        .split('\n')
+        .map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) {
+            return line;
+          }
+          try {
+            const absSegmentUrl = new URL(trimmed, baseObj).toString();
+            return `/api/proxy/video?url=${encodeURIComponent(absSegmentUrl)}`;
+          } catch {
+            return line;
+          }
+        })
+        .join('\n');
+
+      responseHeaders.set('Content-Type', 'application/vnd.apple.mpegurl');
+      responseHeaders.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+
+      return new Response(rewrittenPlaylist, {
+        status: statusCode,
+        headers: responseHeaders,
+      });
+    }
+
+    // تحويل ReadableStream من Node.js إلى Web Readable Stream
+    const webStream = Readable.toWeb(stream) as ReadableStream;
+
+    return new Response(webStream, {
+      status: statusCode,
+      headers: responseHeaders,
+    });
+  } catch (error: any) {
+    console.error('Video proxy error:', error?.message || error);
+    const isTimeout =
+      error?.message?.includes('مهلة') ||
+      error?.message?.includes('Timeout') ||
+      error?.name === 'AbortError';
+
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: isTimeout
+          ? 'انتهت مهلة استجابة السيرفر المصدر (داونيت/أكوام)'
+          : 'تعذر دفق الفيديو من السيرفر المصدر',
+        details: error?.message || 'Upstream connection failed',
+        timeout: isTimeout,
+      }),
+      {
+        status: isTimeout ? 504 : 502,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Origin, X-Requested-With, Content-Type, Accept, Range',
+    },
+  });
+}
