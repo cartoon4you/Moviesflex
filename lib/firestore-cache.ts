@@ -18,8 +18,8 @@ export async function getFirestoreCache<T>(key: string): Promise<T | null> {
     const docId = sanitizeDocId(key);
     const docRef = doc(db, 'media_cache', docId);
 
-    // Timeout read operation after 1.5s to keep response times ultra-fast
-    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500));
+    // Bound Firestore cache wait to 400ms so a cold cache cannot stall navigation
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 400));
     
     const readPromise = (async () => {
       const snap = await getDoc(docRef);
