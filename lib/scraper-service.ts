@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { MediaItem, ServerOption, EpisodeItem, LinkGrabberResult, LinkGrabberFile } from './types';
 import { SAMPLE_CATALOG } from './catalog-data';
-import { getFirestoreCache, setFirestoreCache } from './firestore-cache';
+import { getFirestoreCache, getFirestoreCacheWithMeta, setFirestoreCache } from './firestore-cache';
 
 const BASE_URL = process.env.AKWAM_BASE_URL || 'https://akwam.ss';
 
@@ -22,42 +22,69 @@ function getRandomUserAgent(): string {
 }
 
 // ==============================================================================
-// 1. IN-MEMORY CONCURRENT CACHING SYSTEM (ConcurrentHashMap semantics)
+// 1. IN-MEMORY CONCURRENT CACHING SYSTEM WITH STALE-WHILE-REVALIDATE (SWR)
 // ==============================================================================
 export interface CacheEntry<T> {
   data: T;
   expiresAt: number;
+  staleUntil: number;
 }
 
 /**
- * Thread-safe / Concurrent In-Memory Cache with fine-grained TTL.
- * Prevents redundant multi-page HTML parsing and deep stream crawling.
+ * Thread-safe Concurrent In-Memory Cache with fine-grained TTL & Stale-While-Revalidate.
+ * Allows serving stale data instantaneously (0ms) while transparently revalidating in the background.
  */
 export class ConcurrentMemoryCache<T> {
   private cache = new Map<string, CacheEntry<T>>();
   private defaultTtlMs: number;
+  private defaultStaleMs: number;
 
-  constructor(defaultTtlMs: number = 15 * 60 * 1000) {
+  constructor(
+    defaultTtlMs: number = 30 * 60 * 1000,
+    defaultStaleMs: number = 24 * 60 * 60 * 1000
+  ) {
     this.defaultTtlMs = defaultTtlMs;
+    this.defaultStaleMs = defaultStaleMs;
   }
 
   get(key: string): T | null {
     if (!key) return null;
     const entry = this.cache.get(key);
     if (!entry) return null;
-    if (Date.now() > entry.expiresAt) {
+    if (Date.now() > entry.staleUntil) {
       this.cache.delete(key);
       return null;
     }
     return entry.data;
   }
 
-  set(key: string, data: T, ttlMs?: number): void {
+  /**
+   * Retrieves data with freshness status for Stale-While-Revalidate execution.
+   */
+  getWithStatus(key: string): { data: T; isStale: boolean } | null {
+    if (!key) return null;
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    const now = Date.now();
+    if (now > entry.staleUntil) {
+      this.cache.delete(key);
+      return null;
+    }
+    return {
+      data: entry.data,
+      isStale: now > entry.expiresAt,
+    };
+  }
+
+  set(key: string, data: T, ttlMs?: number, staleMs?: number): void {
     if (!key) return;
     const ttl = ttlMs ?? this.defaultTtlMs;
+    const stale = staleMs ?? Math.max(ttl * 3, this.defaultStaleMs);
+    const now = Date.now();
     this.cache.set(key, {
       data,
-      expiresAt: Date.now() + ttl,
+      expiresAt: now + ttl,
+      staleUntil: now + stale,
     });
   }
 
@@ -78,30 +105,36 @@ export class ConcurrentMemoryCache<T> {
   }
 }
 
-// Domain-partitioned concurrent in-memory caches
-// 15-minute TTL for Home Screen items (latest additions)
-export const homeContentCache = new ConcurrentMemoryCache<any>(15 * 60 * 1000);
+// Domain-partitioned concurrent in-memory caches with extended SWR windows
+// 30-minute fresh, 24-hour stale for Home Screen items
+export const homeContentCache = new ConcurrentMemoryCache<any>(30 * 60 * 1000, 24 * 60 * 60 * 1000);
 
-// 60-minute TTL for parsed series episodes
-export const seriesEpisodesCache = new ConcurrentMemoryCache<EpisodeItem[]>(60 * 60 * 1000);
+// 4-hour fresh, 7-day stale for parsed series episodes
+export const seriesEpisodesCache = new ConcurrentMemoryCache<EpisodeItem[]>(4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
 
-// 60-minute TTL for parsed direct video streams and servers
-export const videoStreamsCache = new ConcurrentMemoryCache<ServerOption[]>(60 * 60 * 1000);
+// 2-hour fresh, 24-hour stale for parsed direct video streams and servers
+export const videoStreamsCache = new ConcurrentMemoryCache<ServerOption[]>(2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
 
-// 60-minute TTL for full media details
-export const mediaDetailsCache = new ConcurrentMemoryCache<MediaItem>(60 * 60 * 1000);
+// 4-hour fresh, 7-day stale for full media details
+export const mediaDetailsCache = new ConcurrentMemoryCache<MediaItem>(4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
 
-// 15-minute TTL for raw HTML responses
-export const htmlCache = new ConcurrentMemoryCache<string>(15 * 60 * 1000);
+// 2-hour fresh, 24-hour stale for catalog query results
+export const catalogQueryCache = new ConcurrentMemoryCache<any>(2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+
+// 1-hour fresh, 24-hour stale for search results
+export const searchMemoryCache = new ConcurrentMemoryCache<MediaItem[]>(60 * 60 * 1000, 24 * 60 * 60 * 1000);
+
+// 30-minute fresh for raw HTML responses
+export const htmlCache = new ConcurrentMemoryCache<string>(30 * 60 * 1000, 2 * 60 * 60 * 1000);
 
 // Legacy cache compatibility helpers
-const generalMemoryCache = new ConcurrentMemoryCache<any>(15 * 60 * 1000);
+const generalMemoryCache = new ConcurrentMemoryCache<any>(30 * 60 * 1000, 24 * 60 * 60 * 1000);
 
 export function getFromCache<T>(key: string): T | null {
   return generalMemoryCache.get(key) as T | null;
 }
 
-export function saveToCache<T>(key: string, data: T, ttlMs = 15 * 60 * 1000): void {
+export function saveToCache<T>(key: string, data: T, ttlMs = 30 * 60 * 1000): void {
   generalMemoryCache.set(key, data, ttlMs);
 }
 
@@ -251,78 +284,108 @@ export async function getHomeContent(): Promise<{
 }> {
   const cacheKey = 'home_screen_latest_additions_15m';
 
-  // Tier 1: In-Memory Cache (0ms)
-  const cached = homeContentCache.get(cacheKey) || getFromCache<any>(cacheKey);
-  if (cached) return cached;
+  // Helper to revalidate home data in background (SWR)
+  const triggerBackgroundRevalidation = () => {
+    if (pendingRequests.has(cacheKey)) return pendingRequests.get(cacheKey);
 
-  // Tier 2: Firestore Persistent Cache
-  const cachedFs = await getFirestoreCache<any>(cacheKey);
-  if (cachedFs) {
-    homeContentCache.set(cacheKey, cachedFs, 15 * 60 * 1000);
-    saveToCache(cacheKey, cachedFs, 15 * 60 * 1000);
-    return cachedFs;
+    const bgPromise = (async () => {
+      let scrapedMovies: MediaItem[] = [];
+      let scrapedSeries: MediaItem[] = [];
+
+      try {
+        const [$movies, $series] = await Promise.all([
+          fetchHTML(`${BASE_URL}/movies`, STANDARD_TIMEOUT_MS),
+          fetchHTML(`${BASE_URL}/series`, STANDARD_TIMEOUT_MS)
+        ]);
+
+        if ($movies) {
+          scrapedMovies = parseEntryBoxes($movies, 'movie');
+        }
+
+        if ($series) {
+          scrapedSeries = parseEntryBoxes($series, 'series');
+        }
+      } catch (error) {
+        console.warn('Live scraping error for home:', error);
+      }
+
+      if (scrapedMovies.length === 0 && scrapedSeries.length === 0) {
+        return null;
+      }
+
+      const allMovies = [...scrapedMovies, ...SAMPLE_CATALOG.filter((i) => i.type === 'movie')];
+      const allSeries = [...scrapedSeries, ...SAMPLE_CATALOG.filter((i) => i.type === 'series')];
+
+      const featured = [
+        ...allMovies.slice(0, 3).map((item) => ({ ...item, isFeatured: true })),
+        ...allSeries.slice(0, 2).map((item) => ({ ...item, isFeatured: true })),
+      ];
+
+      const trending = [
+        ...allMovies.slice(3, 8),
+        ...allSeries.slice(2, 7),
+      ];
+
+      const freshData = {
+        featured,
+        latestMovies: allMovies.slice(0, 10),
+        latestSeries: allSeries.slice(0, 10),
+        trending: trending.slice(0, 10),
+      };
+
+      // In-Memory: 30m fresh, 24h stale; Firestore: 24h fresh, 7 days stale window
+      homeContentCache.set(cacheKey, freshData, 30 * 60 * 1000, 24 * 60 * 60 * 1000);
+      saveToCache(cacheKey, freshData, 30 * 60 * 1000);
+      setFirestoreCache(cacheKey, freshData, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+      return freshData;
+    })().finally(() => {
+      pendingRequests.delete(cacheKey);
+    });
+
+    pendingRequests.set(cacheKey, bgPromise);
+    return bgPromise;
+  };
+
+  // Tier 1: In-Memory Cache (0ms) - with SWR support
+  const memEntry = homeContentCache.getWithStatus(cacheKey);
+  if (memEntry) {
+    if (memEntry.isStale) {
+      triggerBackgroundRevalidation();
+    }
+    return memEntry.data;
   }
 
+  // Tier 2: Firestore Persistent Cache - with SWR support (24h fresh, 7 days stale)
+  const fsEntry = await getFirestoreCacheWithMeta<any>(cacheKey);
+  if (fsEntry) {
+    homeContentCache.set(cacheKey, fsEntry.data, 30 * 60 * 1000, 24 * 60 * 60 * 1000);
+    saveToCache(cacheKey, fsEntry.data, 30 * 60 * 1000);
+    if (fsEntry.isStale) {
+      triggerBackgroundRevalidation();
+    }
+    return fsEntry.data;
+  }
 
+  // Tier 3: Cold Start / Initial Cache Miss - execute or await in-flight
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey);
   }
 
-  const fetchPromise = (async () => {
-    let scrapedMovies: MediaItem[] = [];
-    let scrapedSeries: MediaItem[] = [];
+  const bgPromise = triggerBackgroundRevalidation();
+  if (bgPromise) {
+    const liveOrTimeout = await Promise.race([
+      bgPromise,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
+    ]);
+    if (liveOrTimeout) return liveOrTimeout;
+  }
 
-    try {
-      // 1. Fetch live movies and series in parallel with strict 10000ms timeout
-      const [$movies, $series] = await Promise.all([
-        fetchHTML(`${BASE_URL}/movies`, STANDARD_TIMEOUT_MS),
-        fetchHTML(`${BASE_URL}/series`, STANDARD_TIMEOUT_MS)
-      ]);
-      
-      if ($movies) {
-        scrapedMovies = parseEntryBoxes($movies, 'movie');
-      }
-
-      if ($series) {
-        scrapedSeries = parseEntryBoxes($series, 'series');
-      }
-    } catch (error) {
-      console.warn('Live scraping error for home:', error);
-    }
-
-    // Combine scraped items with curated sample catalog
-    const allMovies = [...scrapedMovies, ...SAMPLE_CATALOG.filter((i) => i.type === 'movie')];
-    const allSeries = [...scrapedSeries, ...SAMPLE_CATALOG.filter((i) => i.type === 'series')];
-
-    // Pick top featured from live items with banners or posters
-    const featured = [
-      ...allMovies.slice(0, 3).map((item) => ({ ...item, isFeatured: true })),
-      ...allSeries.slice(0, 2).map((item) => ({ ...item, isFeatured: true })),
-    ];
-
-    const trending = [
-      ...allMovies.slice(3, 8),
-      ...allSeries.slice(2, 7),
-    ];
-
-    const result = {
-      featured,
-      latestMovies: allMovies.slice(0, 10),
-      latestSeries: allSeries.slice(0, 10),
-      trending: trending.slice(0, 10),
-    };
-
-    // Store in ConcurrentMemoryCache & Firestore Persistent Cache
-    homeContentCache.set(cacheKey, result, 15 * 60 * 1000);
-    saveToCache(cacheKey, result, 15 * 60 * 1000);
-    setFirestoreCache(cacheKey, result, 15 * 60 * 1000);
-    return result;
-  })();
-
-  pendingRequests.set(cacheKey, fetchPromise);
-  const result = await fetchPromise;
-  pendingRequests.delete(cacheKey);
-  return result;
+  return {
+    featured: SAMPLE_CATALOG.filter((i) => i.isFeatured),
+    latestMovies: SAMPLE_CATALOG.filter((i) => i.type === 'movie').slice(0, 10),
+    latestSeries: SAMPLE_CATALOG.filter((i) => i.type === 'series').slice(0, 10),
+    trending: SAMPLE_CATALOG.slice(0, 10),
+  };
 }
 
 /**
@@ -363,6 +426,53 @@ function matchesGenre(itemGenres: string[], target: string): boolean {
  * Filter catalog items by Category, Subcategory/Genre, Type, and Sort
  */
 export async function getCatalogItems(params: {
+  category?: string;
+  subcategory?: string;
+  genre?: string;
+  type?: string;
+  sort?: string;
+  page?: number;
+  limit?: number;
+}): Promise<{ items: MediaItem[]; total: number; page: number; totalPages: number }> {
+  const { category = 'all', subcategory, genre, type, sort = 'latest', page = 1, limit = 18 } = params;
+  const activeSubcategory = subcategory || genre;
+  const cacheKey = `catalog_${category}_${activeSubcategory || 'all'}_${type || 'all'}_${sort}_${page}_${limit}`;
+
+  // SWR: Check in-memory catalog cache first (0ms)
+  const memEntry = catalogQueryCache.getWithStatus(cacheKey);
+  if (memEntry) {
+    if (memEntry.isStale && !pendingRequests.has(cacheKey)) {
+      // Revalidate in background
+      const bgPromise = getCatalogItemsDirect(params).then((fresh) => {
+        catalogQueryCache.set(cacheKey, fresh, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+        setFirestoreCache(cacheKey, fresh, 24 * 60 * 60 * 1000);
+      }).finally(() => pendingRequests.delete(cacheKey));
+      pendingRequests.set(cacheKey, bgPromise);
+    }
+    return memEntry.data;
+  }
+
+  // SWR: Check Firestore persistent cache (24 hours TTL)
+  const fsEntry = await getFirestoreCacheWithMeta<any>(cacheKey);
+  if (fsEntry) {
+    catalogQueryCache.set(cacheKey, fsEntry.data, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+    if (fsEntry.isStale && !pendingRequests.has(cacheKey)) {
+      const bgPromise = getCatalogItemsDirect(params).then((fresh) => {
+        catalogQueryCache.set(cacheKey, fresh, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+        setFirestoreCache(cacheKey, fresh, 24 * 60 * 60 * 1000);
+      }).finally(() => pendingRequests.delete(cacheKey));
+      pendingRequests.set(cacheKey, bgPromise);
+    }
+    return fsEntry.data;
+  }
+
+  const result = await getCatalogItemsDirect(params);
+  catalogQueryCache.set(cacheKey, result, 2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+  setFirestoreCache(cacheKey, result, 24 * 60 * 60 * 1000);
+  return result;
+}
+
+async function getCatalogItemsDirect(params: {
   category?: string;
   subcategory?: string;
   genre?: string;
@@ -421,64 +531,85 @@ export async function getCatalogItems(params: {
 }
 
 /**
- * Search movies and series on Akwam
+ * Search movies and series on Akwam with SWR and 24-hour Firestore caching
  */
 export async function searchMedia(query: string): Promise<MediaItem[]> {
   if (!query || !query.trim()) return [];
   const qClean = query.toLowerCase().trim();
-
   const cacheKey = `search_${qClean}`;
-  const cached = getFromCache<MediaItem[]>(cacheKey);
-  if (cached) return cached;
 
-  const cachedFs = await getFirestoreCache<MediaItem[]>(cacheKey);
-  if (cachedFs) {
-    saveToCache(cacheKey, cachedFs, 10 * 60 * 1000);
-    return cachedFs;
+  const triggerBackgroundSearch = () => {
+    if (pendingRequests.has(cacheKey)) return pendingRequests.get(cacheKey);
+
+    const bgPromise = (async () => {
+      const homeData = await getHomeContent();
+      const pool = [...homeData.latestMovies, ...homeData.latestSeries, ...SAMPLE_CATALOG];
+
+      const localMatches = pool.filter(
+        (item) =>
+          item.title.toLowerCase().includes(qClean) ||
+          (item.originalTitle && item.originalTitle.toLowerCase().includes(qClean)) ||
+          item.story.toLowerCase().includes(qClean) ||
+          item.genres.some((g) => g.toLowerCase().includes(qClean))
+      );
+
+      // Attempt live scrape from Akwam search with strict timeout
+      try {
+        const searchUrl = `${BASE_URL}/search?q=${encodeURIComponent(query)}`;
+        const $ = await fetchHTML(searchUrl, STANDARD_TIMEOUT_MS);
+        if ($) {
+          const scrapedSearch = parseEntryBoxes($);
+          scrapedSearch.forEach((sItem) => {
+            if (!localMatches.some((m) => m.id === sItem.id || m.title === sItem.title)) {
+              localMatches.push(sItem);
+            }
+          });
+        }
+      } catch (err) {
+        // ignore
+      }
+
+      // In-Memory: 1 hour fresh, 24 hours stale; Firestore: 24 hours fresh, 7 days stale window
+      searchMemoryCache.set(cacheKey, localMatches, 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+      saveToCache(cacheKey, localMatches, 60 * 60 * 1000);
+      setFirestoreCache(cacheKey, localMatches, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+      return localMatches;
+    })().finally(() => {
+      pendingRequests.delete(cacheKey);
+    });
+
+    pendingRequests.set(cacheKey, bgPromise);
+    return bgPromise;
+  };
+
+  // Tier 1: In-Memory Cache (0ms)
+  const memEntry = searchMemoryCache.getWithStatus(cacheKey);
+  if (memEntry) {
+    if (memEntry.isStale) {
+      triggerBackgroundSearch();
+    }
+    return memEntry.data;
   }
-  
+
+  // Tier 2: Firestore Persistent Cache (stored for 24 hours)
+  const fsEntry = await getFirestoreCacheWithMeta<MediaItem[]>(cacheKey);
+  if (fsEntry) {
+    searchMemoryCache.set(cacheKey, fsEntry.data, 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+    saveToCache(cacheKey, fsEntry.data, 60 * 60 * 1000);
+    if (fsEntry.isStale) {
+      triggerBackgroundSearch();
+    }
+    return fsEntry.data;
+  }
+
+  // Tier 3: Cold Start / Initial Cache Miss - execute or await in-flight
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey);
   }
 
-  const fetchPromise = (async () => {
-    // Search in local & cached catalog
-    const homeData = await getHomeContent();
-    const pool = [...homeData.latestMovies, ...homeData.latestSeries, ...SAMPLE_CATALOG];
-
-    const localMatches = pool.filter(
-      (item) =>
-        item.title.toLowerCase().includes(qClean) ||
-        (item.originalTitle && item.originalTitle.toLowerCase().includes(qClean)) ||
-        item.story.toLowerCase().includes(qClean) ||
-        item.genres.some((g) => g.toLowerCase().includes(qClean))
-    );
-
-    // Attempt live scrape from Akwam search
-    try {
-      const searchUrl = `${BASE_URL}/search?q=${encodeURIComponent(query)}`;
-      const $ = await fetchHTML(searchUrl);
-      if ($) {
-        const scrapedSearch = parseEntryBoxes($);
-        scrapedSearch.forEach((sItem) => {
-          if (!localMatches.some((m) => m.id === sItem.id || m.title === sItem.title)) {
-            localMatches.push(sItem);
-          }
-        });
-      }
-    } catch (err) {
-      // ignore
-    }
-
-    saveToCache(cacheKey, localMatches, 10 * 60 * 1000); // 10 min cache
-    setFirestoreCache(cacheKey, localMatches, 10 * 60 * 1000);
-    return localMatches;
-  })();
-  
-  pendingRequests.set(cacheKey, fetchPromise);
-  const result = await fetchPromise;
-  pendingRequests.delete(cacheKey);
-  return result;
+  const bgPromise = triggerBackgroundSearch();
+  const result = await bgPromise;
+  return result || [];
 }
 
 export function parseMediaId(rawId: string): string {
@@ -512,30 +643,56 @@ export async function getMediaDetails(id: string): Promise<MediaItem | null> {
   const decodedPath = parseMediaId(id);
   const cacheKey = `media_details_${id}`;
 
+  const triggerBackgroundDetailsRefresh = () => {
+    if (pendingRequests.has(cacheKey)) return pendingRequests.get(cacheKey);
+
+    const bgPromise = fetchMediaDetailsFromSource(id, decodedPath, cacheKey).finally(() => {
+      pendingRequests.delete(cacheKey);
+    });
+
+    pendingRequests.set(cacheKey, bgPromise);
+    return bgPromise;
+  };
+
   // 1. Check Concurrent Memory Cache first for 0ms instantaneous return
-  const cached =
-    mediaDetailsCache.get(cacheKey) ||
-    mediaDetailsCache.get(id) ||
-    mediaDetailsCache.get(decodedPath) ||
-    getFromCache<MediaItem>(cacheKey);
+  const memEntry =
+    mediaDetailsCache.getWithStatus(cacheKey) ||
+    mediaDetailsCache.getWithStatus(id) ||
+    mediaDetailsCache.getWithStatus(decodedPath);
 
-  if (cached) return cached;
+  if (memEntry) {
+    if (memEntry.isStale) {
+      triggerBackgroundDetailsRefresh();
+    }
+    return memEntry.data;
+  }
 
-  // 2. Check Firestore Persistent Cache
-  const cachedFs = await getFirestoreCache<MediaItem>(cacheKey);
-  if (cachedFs) {
-    mediaDetailsCache.set(cacheKey, cachedFs, 60 * 60 * 1000);
-    mediaDetailsCache.set(id, cachedFs, 60 * 60 * 1000);
-    mediaDetailsCache.set(decodedPath, cachedFs, 60 * 60 * 1000);
-    saveToCache(cacheKey, cachedFs, 60 * 60 * 1000);
-    return cachedFs;
+  // 2. Check Firestore Persistent Cache (stored for 7 days)
+  const fsEntry = await getFirestoreCacheWithMeta<MediaItem>(cacheKey);
+  if (fsEntry) {
+    mediaDetailsCache.set(cacheKey, fsEntry.data, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    mediaDetailsCache.set(id, fsEntry.data, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    mediaDetailsCache.set(decodedPath, fsEntry.data, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    saveToCache(cacheKey, fsEntry.data, 4 * 60 * 60 * 1000);
+    if (fsEntry.isStale) {
+      triggerBackgroundDetailsRefresh();
+    }
+    return fsEntry.data;
   }
 
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey);
   }
 
-  const fetchPromise = (async () => {
+  const fetchPromise = triggerBackgroundDetailsRefresh();
+  return fetchPromise;
+}
+
+async function fetchMediaDetailsFromSource(
+  id: string,
+  decodedPath: string,
+  cacheKey: string
+): Promise<MediaItem | null> {
     // Check in sample catalog
     const sampleFound = SAMPLE_CATALOG.find((item) => item.id === id);
 
@@ -826,12 +983,12 @@ export async function getMediaDetails(id: string): Promise<MediaItem | null> {
           episodes: episodes.length > 0 ? episodes : sampleFound?.episodes,
         };
 
-        // Cache in ConcurrentMemoryCache & Firestore for 60 minutes
-        mediaDetailsCache.set(cacheKey, result, 60 * 60 * 1000);
-        mediaDetailsCache.set(id, result, 60 * 60 * 1000);
-        mediaDetailsCache.set(decodedPath, result, 60 * 60 * 1000);
-        saveToCache(cacheKey, result, 60 * 60 * 1000);
-        setFirestoreCache(cacheKey, result, 60 * 60 * 1000);
+        // In-Memory: 4 hours fresh, 7 days stale; Firestore: 7 days fresh, 14 days stale window
+        mediaDetailsCache.set(cacheKey, result, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+        mediaDetailsCache.set(id, result, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+        mediaDetailsCache.set(decodedPath, result, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+        saveToCache(cacheKey, result, 4 * 60 * 60 * 1000);
+        setFirestoreCache(cacheKey, result, 7 * 24 * 60 * 60 * 1000, 14 * 24 * 60 * 60 * 1000);
         return result;
       }
     } catch (err) {
@@ -839,15 +996,9 @@ export async function getMediaDetails(id: string): Promise<MediaItem | null> {
     }
 
     const fallback = sampleFound || SAMPLE_CATALOG[0];
-    mediaDetailsCache.set(cacheKey, fallback, 15 * 60 * 1000);
-    saveToCache(cacheKey, fallback, 15 * 60 * 1000);
+    mediaDetailsCache.set(cacheKey, fallback, 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+    saveToCache(cacheKey, fallback, 60 * 60 * 1000);
     return fallback;
-  })();
-
-  pendingRequests.set(cacheKey, fetchPromise);
-  const result = await fetchPromise;
-  pendingRequests.delete(cacheKey);
-  return result;
 }
 
 /**
