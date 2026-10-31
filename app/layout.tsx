@@ -6,9 +6,6 @@ import Navbar from '@/components/Navbar';
 import MobileBottomNav from '@/components/MobileBottomNav';
 import Footer from '@/components/Footer';
 import TelemetryOptimization from '@/components/TelemetryOptimization';
-import Link from 'next/link';
-import { Film, Heart, Shield, Sparkles } from 'lucide-react';
-import YemenflexLogo from '@/components/YemenflexLogo';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -20,9 +17,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'يمن فلکس YemenFlex - منصة مشاهدة أحدث الأفلام والمسلسلات',
+  title: 'عرب فليكس Arabflex - منصة مشاهدة أحدث الأفلام والمسلسلات',
   description:
-    'يمن فلکس (YemenFlex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة وقائمة مشاهدة سحابية متزامنة.',
+    'عرب فليكس (Arabflex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة وقائمة مشاهدة سحابية متزامنة.',
   icons: {
     icon: [
       { url: '/favicon.png', type: 'image/png' },
@@ -34,27 +31,27 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'يمن فلکس YemenFlex',
+    title: 'عرب فليكس Arabflex',
   },
   openGraph: {
-    title: 'يمن فلکس YemenFlex - منصة مشاهدة أحدث الأفلام والمسلسلات',
+    title: 'عرب فليكس Arabflex - منصة مشاهدة أحدث الأفلام والمسلسلات',
     description:
-      'يمن فلکس (YemenFlex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة وقائمة مشاهدة سحابية متزامنة.',
+      'عرب فليكس (Arabflex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة وقائمة مشاهدة سحابية متزامنة.',
     type: 'website',
     images: [
       {
         url: '/yemenflex-banner.jpg',
         width: 1280,
         height: 720,
-        alt: 'يمن فلکس Yemenflex',
+        alt: 'عرب فليكس Arabflex',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'يمن فلکس YemenFlex',
+    title: 'عرب فليكس Arabflex',
     description:
-      'يمن فلکس (YemenFlex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة.',
+      'عرب فليكس (Arabflex) - منصة مشاهدة الأفلام والمسلسلات مع جودات متعددة وسيرفرات سريعة.',
     images: ['/yemenflex-banner.jpg'],
   },
 };
@@ -73,25 +70,35 @@ export default function RootLayout({
             __html: `
               (function() {
                 function isChunkError(msg) {
-                  return typeof msg === 'string' && (msg.indexOf('ChunkLoadError') !== -1 || msg.indexOf('Loading chunk') !== -1);
+                  if (!msg) return false;
+                  var str = typeof msg === 'string' ? msg : (msg.message || String(msg));
+                  return str.indexOf('ChunkLoadError') !== -1 || str.indexOf('Loading chunk') !== -1 || str.indexOf('Failed to fetch dynamically imported module') !== -1;
+                }
+                function recoverChunk() {
+                  try {
+                    var reloadKey = 'chunk_reload_' + location.pathname;
+                    var lastReload = sessionStorage.getItem(reloadKey);
+                    var now = Date.now();
+                    if (!lastReload || now - parseInt(lastReload, 10) > 10000) {
+                      sessionStorage.setItem(reloadKey, String(now));
+                      window.location.reload();
+                    }
+                  } catch (e) {}
                 }
                 window.addEventListener('error', function(e) {
                   var msg = (e && e.message) ? e.message : ((e && e.error && e.error.message) ? e.error.message : '');
-                  if (isChunkError(msg) || (e && e.error && e.error.name === 'ChunkLoadError')) {
+                  if (isChunkError(msg) || (e && e.error && (e.error.name === 'ChunkLoadError' || isChunkError(e.error.name)))) {
                     if (e.preventDefault) e.preventDefault();
-                    console.warn('YemenFlex: Handled early ChunkLoadError gracefully.');
-                    var reloadKey = 'chunk_reload_' + location.pathname;
-                    if (!sessionStorage.getItem(reloadKey)) {
-                      sessionStorage.setItem(reloadKey, '1');
-                      location.reload();
-                    }
+                    console.warn('Arabflex: Auto-recovering from ChunkLoadError...');
+                    recoverChunk();
                   }
                 }, true);
                 window.addEventListener('unhandledrejection', function(e) {
                   var reason = (e && e.reason) ? (e.reason.message || String(e.reason)) : '';
-                  if (isChunkError(reason)) {
+                  if (isChunkError(reason) || (e && e.reason && e.reason.name === 'ChunkLoadError')) {
                     if (e.preventDefault) e.preventDefault();
-                    console.warn('YemenFlex: Suppressed unhandled chunk rejection.');
+                    console.warn('Arabflex: Recovering from unhandled chunk rejection...');
+                    recoverChunk();
                   }
                 });
               })();

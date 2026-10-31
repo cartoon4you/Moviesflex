@@ -28,7 +28,6 @@ import { safeFetchJson } from '@/lib/utils';
 import {
   getCachedMediaDetails,
   preloadMediaDetails,
-  preloadVideoChunk,
   preloadImage,
 } from '@/lib/preload-manager';
 
@@ -90,10 +89,6 @@ function WatchContent() {
             }
           } else {
             setActiveServers(item.servers || []);
-            // Preload primary video chunk
-            if (item.servers && item.servers.length > 0 && item.servers[0]?.url) {
-              preloadVideoChunk(item.servers[0].url, item.servers[0].referer);
-            }
           }
         }
       } catch (error) {
@@ -120,10 +115,6 @@ function WatchContent() {
         if (result.ok && result.data?.success && result.data.data?.servers && result.data.data.servers.length > 0) {
           ep.servers = result.data.data.servers;
           setActiveServers(result.data.data.servers);
-          // Preload the primary video chunk of this episode
-          if (result.data.data.servers[0]?.url) {
-            preloadVideoChunk(result.data.data.servers[0].url, result.data.data.servers[0].referer);
-          }
         } else {
           setActiveServers(ep.servers || []);
         }

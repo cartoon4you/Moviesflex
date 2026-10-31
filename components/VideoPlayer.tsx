@@ -20,7 +20,6 @@ import {
   Download,
 } from 'lucide-react';
 import { ServerOption } from '@/lib/types';
-import { preloadVideoChunk } from '@/lib/preload-manager';
 import Hls from 'hls.js';
 
 interface VideoPlayerProps {
@@ -187,33 +186,34 @@ export default function VideoPlayer({
         });
       }
     } else {
-      // Native Video (MP4 / WebM)
-      video.preload = 'metadata';
+      // Native Video (MP4 / WebM) - Instant Direct Start
+      video.preload = 'auto';
       video.src = streamUrl;
-      console.log(`[Player] ${Date.now()} Src set: ${streamUrl}`);
-      video.load();
 
-      const handleMetadata = () => {
-        console.log(`[Player] ${Date.now()} loadedmetadata`);
+      // Start playback immediately without artificial waits or CORS preflights
+      safePlay(video);
+
+      const handleReady = () => {
         setIsLoading(false);
         safePlay(video);
       };
       
       const handlePlaying = () => {
-        console.log(`[Player] ${Date.now()} playing`);
+        setIsLoading(false);
+        setIsPlaying(true);
       };
 
       const handleError = (e: any) => {
-        console.error(`[Player] ${Date.now()} error:`, e);
+        console.error(`[Player] Playback error on: ${streamUrl}`, e);
         // If direct playback fails (due to CDN hotlink/CORS rules on Downet/Akwam),
-        // automatically fallback to the optimized streaming proxy without failing
+        // automatically fallback to the streaming proxy
         if (!useProxy && proxyOverride !== false) {
-          console.warn('Direct playback blocked; automatically attempting streaming proxy...');
+          console.warn('Direct playback failed; attempting streaming proxy fallback...');
           setProxyOverride(true);
           return;
         }
 
-        // If streaming proxy failed, automatically fallback to direct CDN playback
+        // If streaming proxy failed, attempt direct CDN playback fallback
         if (useProxy && proxyOverride !== true) {
           console.warn('Streaming proxy failed; attempting direct playback fallback...');
           setProxyOverride(false);
@@ -224,12 +224,17 @@ export default function VideoPlayer({
         setErrorMsg('تعذر تشغيل هذا الرابط حالياً. قد تكون صلاحية رابط البث المؤقت انتهت أو السيرفر محجوب.');
       };
 
-      video.addEventListener('loadedmetadata', handleMetadata);
+      // Listen for the earliest frame ready events
+      video.addEventListener('loadeddata', handleReady);
+      video.addEventListener('loadedmetadata', handleReady);
+      video.addEventListener('canplay', handleReady);
       video.addEventListener('playing', handlePlaying);
       video.addEventListener('error', handleError);
 
       return () => {
-        video.removeEventListener('loadedmetadata', handleMetadata);
+        video.removeEventListener('loadeddata', handleReady);
+        video.removeEventListener('loadedmetadata', handleReady);
+        video.removeEventListener('canplay', handleReady);
         video.removeEventListener('playing', handlePlaying);
         video.removeEventListener('error', handleError);
       };
@@ -243,19 +248,6 @@ export default function VideoPlayer({
       }
     };
   }, [streamUrl, activeServer, useProxy, proxyOverride, isMkvFormat, safePlay]);
-
-  // Pre-warm alternate server quality streams in background for instant quality switching
-  useEffect(() => {
-    if (!servers || servers.length <= 1) return;
-    const idleTimer = setTimeout(() => {
-      servers.forEach((srv, idx) => {
-        if (idx !== selectedServerIndex && srv?.url) {
-          preloadVideoChunk(srv.url, srv.referer);
-        }
-      });
-    }, 2500);
-    return () => clearTimeout(idleTimer);
-  }, [servers, selectedServerIndex]);
 
   // Seamless Quality Switch preserving exact playback position
   const changeQuality = (index: number) => {
@@ -329,6 +321,7 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     setDuration(video.duration || 0);
+    setIsLoading(false);
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -613,6 +606,8 @@ export default function VideoPlayer({
           onDoubleClick={toggleFullscreen}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
+          onLoadedData={() => setIsLoading(false)}
+          onCanPlay={() => setIsLoading(false)}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
           onWaiting={() => setIsLoading(true)}
