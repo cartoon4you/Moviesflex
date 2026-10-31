@@ -659,7 +659,16 @@ export async function getMediaDetailsShell(id: string): Promise<MediaItem | null
     };
   }
 
-  // 2. Check sample catalog
+  // 2. Check Firestore Persistent Cache (< 50ms)
+  const fsEntry = await getFirestoreCacheWithMeta<MediaItem>(cacheKey);
+  if (fsEntry) {
+    const shellData = { ...fsEntry.data, servers: [] };
+    mediaDetailsCache.set(cacheKey, shellData, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    mediaDetailsCache.set(id, shellData, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+    return shellData;
+  }
+
+  // 3. Check sample catalog
   const sampleFound = SAMPLE_CATALOG.find((item) => item.id === id);
 
   try {
@@ -741,6 +750,7 @@ export async function getMediaDetailsShell(id: string): Promise<MediaItem | null
 
       mediaDetailsCache.set(cacheKey, item, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
       mediaDetailsCache.set(id, item, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+      setFirestoreCache(cacheKey, item, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
       return item;
     }
   } catch (error) {

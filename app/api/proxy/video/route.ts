@@ -213,11 +213,10 @@ export async function GET(request: NextRequest) {
 
     const headersToSend: Record<string, string> = {
       'User-Agent': userAgent,
-      'Accept': '*/*',
+      'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
       'Accept-Language': 'ar,en-US;q=0.9,en;q=0.8',
       'Accept-Encoding': 'identity', // مهم لحساب Range بدقة
       'Connection': 'keep-alive',
-      // ❌ لا نرسل Sec-Fetch-* — قد تُدخلنا في مسار بطيء (bot-detection)
     };
 
     if (rangeHeader) headersToSend['Range'] = rangeHeader;
@@ -271,6 +270,7 @@ export async function GET(request: NextRequest) {
       for await (const chunk of stream) chunks.push(chunk as Uint8Array);
       const playlistText = Buffer.concat(chunks).toString('utf-8');
       const baseObj = new URL(videoUrl);
+      const mediaIdQuery = mediaIdParam ? `&mediaId=${encodeURIComponent(mediaIdParam)}` : '';
       const rewritten = playlistText
         .split('\n')
         .map((line) => {
@@ -278,7 +278,7 @@ export async function GET(request: NextRequest) {
           if (!t || t.startsWith('#')) return line;
           try {
             const abs = new URL(t, baseObj).toString();
-            return `/api/proxy/video?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(effectiveReferer)}`;
+            return `/api/proxy/video?url=${encodeURIComponent(abs)}&referer=${encodeURIComponent(effectiveReferer)}${mediaIdQuery}`;
           } catch {
             return line;
           }

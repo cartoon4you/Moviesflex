@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "eslint .",
-    "clean": "next clean"
+    "clean": "next clean",
+    "test": "echo 'Hello'"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -125,11 +125,18 @@ export default function VideoPlayer({
         setAutoplayBlocked(false);
       }
     } catch (err: any) {
-      console.warn('Playback prevented by browser autoplay policy:', err?.name, err?.message);
-      setIsPlaying(false);
-      if (err?.name === 'NotAllowedError') {
-        setAutoplayBlocked(true);
+      // Chrome pauses background video to save power; handle AbortError silently without failing
+      if (err?.name === 'AbortError') {
+        setIsPlaying(false);
+        return;
       }
+      if (err?.name === 'NotAllowedError') {
+        setIsPlaying(false);
+        setAutoplayBlocked(true);
+        return;
+      }
+      console.warn('Playback prevented:', err?.name, err?.message);
+      setIsPlaying(false);
     }
   }, []);
 
@@ -186,7 +193,13 @@ export default function VideoPlayer({
     const isHls = streamUrl.includes('.m3u8') || activeServer?.type === 'hls';
 
     const handleError = (e: any) => {
-      console.warn(`[Player] Playback issue on: ${streamUrl}`, e);
+      // Only proceed with server failover if there is a genuine fatal media loading error
+      const errCode = video.error?.code;
+      if (errCode && errCode !== 2 && errCode !== 3 && errCode !== 4) {
+        return;
+      }
+
+      console.warn(`[Player] Fatal media error on: ${streamUrl}`, e);
 
       // 1. Auto-failover: If another server is available, automatically switch to it
       const currentIdx = selectedIndexRef.current;
@@ -249,7 +262,7 @@ export default function VideoPlayer({
         }
       });
     } else {
-      // Native Video (MP4 / WebM) - Wait for canplay/loadeddata before safePlay to avoid AbortError
+      // Native Video (MP4 / WebM) - Wait for canplay before safePlay to avoid AbortError
       video.preload = 'auto';
       video.src = streamUrl;
 
@@ -265,10 +278,14 @@ export default function VideoPlayer({
         setIsPlaying(true);
       };
 
-      video.addEventListener('loadeddata', handleReady);
-      video.addEventListener('loadedmetadata', handleReady);
+      const handlePause = () => {
+        if (isCancelled) return;
+        setIsPlaying(false);
+      };
+
       video.addEventListener('canplay', handleReady);
       video.addEventListener('playing', handlePlaying);
+      video.addEventListener('pause', handlePause);
       video.addEventListener('error', handleError);
 
       return () => {
@@ -276,10 +293,9 @@ export default function VideoPlayer({
         if (preconnectLink && preconnectLink.parentNode) {
           try { preconnectLink.parentNode.removeChild(preconnectLink); } catch {}
         }
-        video.removeEventListener('loadeddata', handleReady);
-        video.removeEventListener('loadedmetadata', handleReady);
         video.removeEventListener('canplay', handleReady);
         video.removeEventListener('playing', handlePlaying);
+        video.removeEventListener('pause', handlePause);
         video.removeEventListener('error', handleError);
       };
     }
