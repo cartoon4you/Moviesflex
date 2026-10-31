@@ -49,6 +49,7 @@ interface Toast {
 }
 
 const SERVER_STORAGE_KEY = 'world_cinema_server';
+const clientTmdbCache = new Map<string, any>();
 
 export default function WorldCinemaContent() {
   const [movies, setMovies] = useState<any[]>([]);
@@ -133,14 +134,18 @@ export default function WorldCinemaContent() {
     showToast('🏠 تم العودة للرئيسية بنجاح', 'success');
   }, [showToast]);
 
-  /* ---------- TMDB fetch (via proxy) ---------- */
+  /* ---------- TMDB fetch (with client in-memory cache) ---------- */
   const fetchTMDB = useCallback(async (endpoint: string, signal?: AbortSignal) => {
+    if (clientTmdbCache.has(endpoint)) {
+      return clientTmdbCache.get(endpoint);
+    }
     try {
       const result = await safeFetchJson<any>(
         `/api/tmdb?endpoint=${encodeURIComponent(endpoint)}`,
         { signal }
       );
       if (!result.ok || !result.data) return { results: [] };
+      clientTmdbCache.set(endpoint, result.data);
       return result.data;
     } catch (err: any) {
       if (err?.name === 'AbortError') return null;

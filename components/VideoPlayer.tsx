@@ -26,6 +26,7 @@ interface VideoPlayerProps {
   servers: ServerOption[];
   title?: string;
   poster?: string;
+  mediaId?: string;
   onServerChange?: (server: ServerOption) => void;
   onRefreshLink?: () => Promise<boolean | void>;
 }
@@ -34,6 +35,7 @@ export default function VideoPlayer({
   servers,
   title,
   poster,
+  mediaId,
   onServerChange,
   onRefreshLink,
 }: VideoPlayerProps) {
@@ -45,6 +47,16 @@ export default function VideoPlayer({
   // Active server index
   const [selectedServerIndex, setSelectedServerIndex] = useState(0);
   const activeServer = servers[selectedServerIndex] || servers[0];
+
+  const serversRef = useRef(servers);
+  const selectedIndexRef = useRef(selectedServerIndex);
+  const onServerChangeRef = useRef(onServerChange);
+
+  useEffect(() => {
+    serversRef.current = servers;
+    selectedIndexRef.current = selectedServerIndex;
+    onServerChangeRef.current = onServerChange;
+  }, [servers, selectedServerIndex, onServerChange]);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -74,21 +86,27 @@ export default function VideoPlayer({
     return u.includes('.mkv') || activeServer?.type === 'mkv';
   }, [activeServer]);
 
-  // Prefer DIRECT client-side playback by default to bypass Cloud Run datacenter proxy latency and IP throttling.
-  // Seamlessly auto-switches to proxy if direct playback encounters hotlink/CORS restrictions.
+  // Seamlessly route CDN streams requiring Referer through our high-speed keep-alive proxy.
+  // Direct playback is preserved for open CDNs like Google storage sample buckets.
   const useProxy = useMemo(() => {
     if (proxyOverride !== null) return proxyOverride;
+    const url = activeServer?.url || '';
+    if (url.includes('downet') || url.includes('akwam') || activeServer?.referer) {
+      return true;
+    }
     return false;
-  }, [proxyOverride]);
+  }, [proxyOverride, activeServer]);
 
   // Compute final stream URL (direct URL by default without any proxy)
   const streamUrl = useMemo(() => {
     if (!activeServer) return '';
     if (useProxy) {
-      return `/api/proxy/video?url=${encodeURIComponent(activeServer.url)}&referer=${encodeURIComponent(activeServer.referer || 'https://akwam.ss/')}`;
+      const refUrl = activeServer.referer || 'https://akwam.ss/';
+      const mId = mediaId ? `&mediaId=${encodeURIComponent(mediaId)}` : '';
+      return `/api/proxy/video?url=${encodeURIComponent(activeServer.url)}&referer=${encodeURIComponent(refUrl)}${mId}`;
     }
     return activeServer.url;
-  }, [activeServer, useProxy]);
+  }, [activeServer, useProxy, mediaId]);
 
   /**
    * Safe Play Helper:
@@ -149,82 +167,104 @@ export default function VideoPlayer({
 
     let isCancelled = false;
 
+    // Dynamic preconnect to warm up TCP/TLS for the actual CDN domain
+    let preconnectLink: HTMLLinkElement | null = null;
+    try {
+      const rawTargetUrl = activeServer?.url || streamUrl;
+      const targetOrigin = new URL(rawTargetUrl.startsWith('http') ? rawTargetUrl : window.location.origin).origin;
+      preconnectLink = document.createElement('link');
+      preconnectLink.rel = 'preconnect';
+      preconnectLink.href = targetOrigin;
+      preconnectLink.crossOrigin = 'anonymous';
+      document.head.appendChild(preconnectLink);
+    } catch {}
+
     // Set muted initially to satisfy browser autoplay guidelines
     video.muted = true;
     setIsMuted(true);
 
     const isHls = streamUrl.includes('.m3u8') || activeServer?.type === 'hls';
 
-    if (isHls && Hls.isSupported()) {
-      if (!isCancelled && videoRef.current) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true, // Enabled for faster start
-          maxBufferLength: 30, // Reduced from 60
-          maxMaxBufferLength: 60, // Reduced from 120
-          maxBufferSize: 30 * 1024 * 1024, // Reduced from 60
-          backBufferLength: 15, // Reduced from 30
-          progressive: true,
-        });
-        hlsRef.current = hls;
+    const handleError = (e: any) => {
+      console.warn(`[Player] Playback issue on: ${streamUrl}`, e);
 
-        hls.loadSource(streamUrl);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (isCancelled) return;
-          setIsLoading(false);
-          safePlay(video);
-        });
-
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal && !isCancelled) {
-            console.warn('HLS Fatal Error:', data.type);
-            setIsLoading(false);
-            setErrorMsg('تعذر تشغيل هذا البث المباشر. يرجى اختيار سيرفر آخر من القائمة.');
-          }
-        });
+      // 1. Auto-failover: If another server is available, automatically switch to it
+      const currentIdx = selectedIndexRef.current;
+      const currentServers = serversRef.current;
+      if (currentIdx + 1 < currentServers.length) {
+        const nextIndex = currentIdx + 1;
+        console.warn(`[Player] Current server failed. Auto-switching to backup server ${nextIndex + 1} (${currentServers[nextIndex]?.name || ''})...`);
+        setSelectedServerIndex(nextIndex);
+        if (onServerChangeRef.current && currentServers[nextIndex]) {
+          onServerChangeRef.current(currentServers[nextIndex]);
+        }
+        setProxyOverride(null);
+        setIsLoading(true);
+        return;
       }
+
+      // 2. If direct playback failed, attempt streaming proxy fallback
+      if (!useProxy && proxyOverride !== false) {
+        console.warn('Direct playback failed; attempting streaming proxy fallback...');
+        setProxyOverride(true);
+        return;
+      }
+
+      // 3. If streaming proxy failed, attempt direct CDN playback fallback
+      if (useProxy && proxyOverride !== true) {
+        console.warn('Streaming proxy failed; attempting direct playback fallback...');
+        setProxyOverride(false);
+        return;
+      }
+
+      setIsLoading(false);
+      setErrorMsg('تعذر تشغيل هذا الرابط حالياً. قد تكون صلاحية رابط البث المؤقت انتهت أو السيرفر محجوب.');
+    };
+
+    if (isHls && Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 30 * 1024 * 1024,
+        backBufferLength: 15,
+        progressive: true,
+      });
+      hlsRef.current = hls;
+
+      hls.loadSource(streamUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (isCancelled) return;
+        setIsLoading(false);
+        safePlay(video);
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal && !isCancelled) {
+          console.warn('HLS Fatal Error:', data.type);
+          handleError(data);
+        }
+      });
     } else {
-      // Native Video (MP4 / WebM) - Instant Direct Start
+      // Native Video (MP4 / WebM) - Wait for canplay/loadeddata before safePlay to avoid AbortError
       video.preload = 'auto';
       video.src = streamUrl;
 
-      // Start playback immediately without artificial waits or CORS preflights
-      safePlay(video);
-
       const handleReady = () => {
+        if (isCancelled) return;
         setIsLoading(false);
         safePlay(video);
       };
-      
+
       const handlePlaying = () => {
+        if (isCancelled) return;
         setIsLoading(false);
         setIsPlaying(true);
       };
 
-      const handleError = (e: any) => {
-        console.error(`[Player] Playback error on: ${streamUrl}`, e);
-        // If direct playback fails (due to CDN hotlink/CORS rules on Downet/Akwam),
-        // automatically fallback to the streaming proxy
-        if (!useProxy && proxyOverride !== false) {
-          console.warn('Direct playback failed; attempting streaming proxy fallback...');
-          setProxyOverride(true);
-          return;
-        }
-
-        // If streaming proxy failed, attempt direct CDN playback fallback
-        if (useProxy && proxyOverride !== true) {
-          console.warn('Streaming proxy failed; attempting direct playback fallback...');
-          setProxyOverride(false);
-          return;
-        }
-
-        setIsLoading(false);
-        setErrorMsg('تعذر تشغيل هذا الرابط حالياً. قد تكون صلاحية رابط البث المؤقت انتهت أو السيرفر محجوب.');
-      };
-
-      // Listen for the earliest frame ready events
       video.addEventListener('loadeddata', handleReady);
       video.addEventListener('loadedmetadata', handleReady);
       video.addEventListener('canplay', handleReady);
@@ -232,6 +272,10 @@ export default function VideoPlayer({
       video.addEventListener('error', handleError);
 
       return () => {
+        isCancelled = true;
+        if (preconnectLink && preconnectLink.parentNode) {
+          try { preconnectLink.parentNode.removeChild(preconnectLink); } catch {}
+        }
         video.removeEventListener('loadeddata', handleReady);
         video.removeEventListener('loadedmetadata', handleReady);
         video.removeEventListener('canplay', handleReady);
@@ -242,6 +286,9 @@ export default function VideoPlayer({
 
     return () => {
       isCancelled = true;
+      if (preconnectLink && preconnectLink.parentNode) {
+        try { preconnectLink.parentNode.removeChild(preconnectLink); } catch {}
+      }
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;

@@ -84,7 +84,24 @@ function emitGuestChange(newItems: WatchlistItem[]) {
 
 export function WatchlistProvider({ children }: { children: React.ReactNode }) {
   const { currentUser } = useAuth();
-  const guestWatchlist = useSyncExternalStore(subscribeGuest, getGuestSnapshot, getServerSnapshot);
+
+  // CRITICAL for Next.js SSR / React Hydration:
+  // Using isMounted ensures that initial client render strictly matches server-side HTML []
+  // before reading localStorage on mount, preventing React Error #418 (Hydration Mismatch).
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => {
+    let active = true;
+    Promise.resolve().then(() => {
+      if (active) setIsMounted(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const rawGuestWatchlist = useSyncExternalStore(subscribeGuest, getGuestSnapshot, getServerSnapshot);
+  const guestWatchlist = isMounted ? rawGuestWatchlist : emptySnapshot;
+
   const [firestoreWatchlist, setFirestoreWatchlist] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(false);
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getMediaDetails } from '@/lib/scraper-service';
+import { getMediaDetailsShell } from '@/lib/scraper-service';
 
 export const revalidate = 600;
 
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const details = await getMediaDetails(id);
+    const details = await getMediaDetailsShell(id);
     if (!details) {
       return NextResponse.json(
         { success: false, error: 'لم يتم العثور على المادة' },

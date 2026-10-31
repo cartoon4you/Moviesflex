@@ -38,95 +38,119 @@ function WatchContent() {
   const [media, setMedia] = useState<MediaItem | null>(null);
   const [selectedEpisode, setSelectedEpisode] = useState<EpisodeItem | null>(null);
   const [activeServers, setActiveServers] = useState<ServerOption[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingShell, setLoadingShell] = useState(true);
+  const [loadingServers, setLoadingServers] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedAllLinks, setCopiedAllLinks] = useState(false);
-  const [loadingEpisode, setLoadingEpisode] = useState(false);
 
   const { isInWatchlist, addToWatchlist, removeFromWatchlist } = useWatchlist();
 
+  // 1. Load Shell Metadata (< 300ms response time)
   useEffect(() => {
-    async function loadMediaDetails() {
+    let active = true;
+
+    async function loadShellDetails() {
       if (!mediaId) return;
 
-      // Check client memory cache first for 0ms instantaneous render
       const cached = getCachedMediaDetails(mediaId);
       if (cached) {
-        setMedia(cached);
-        if (cached.episodes && cached.episodes.length > 0) {
-          const firstEp = cached.episodes[0];
-          setSelectedEpisode(firstEp);
-          setActiveServers(firstEp.servers && firstEp.servers.length > 0 ? firstEp.servers : cached.servers || []);
-        } else {
-          setActiveServers(cached.servers || []);
+        if (active) {
+          setMedia(cached);
+          if (cached.episodes && cached.episodes.length > 0) {
+            setSelectedEpisode(cached.episodes[0]);
+          }
+          if (cached.servers && cached.servers.length > 0) {
+            setActiveServers(cached.servers);
+          }
+          setLoadingShell(false);
         }
-        setLoading(false);
       } else {
-        setLoading(true);
+        if (active) setLoadingShell(true);
       }
 
       try {
-        const result = await safeFetchJson<any>(`/api/details?id=${encodeURIComponent(mediaId)}`, {
-          cache: 'force-cache',
-        });
-        if (result.ok && result.data?.success && result.data.data) {
+        const result = await safeFetchJson<any>(`/api/details?id=${encodeURIComponent(mediaId)}`);
+        if (active && result.ok && result.data?.success && result.data.data) {
           const item: MediaItem = result.data.data;
           setMedia(item);
 
-          // Preload backdrop & poster
           if (item.banner) preloadImage(item.banner, 'high');
           if (item.poster) preloadImage(item.poster, 'auto');
 
           if (item.episodes && item.episodes.length > 0) {
-            const firstEp = item.episodes[0];
-            setSelectedEpisode(firstEp);
-            setActiveServers(firstEp.servers && firstEp.servers.length > 0 ? firstEp.servers : item.servers || []);
-
-            // Preload next episode in background
-            if (item.episodes.length > 1) {
-              const nextEp = item.episodes[1];
-              preloadMediaDetails(nextEp.id);
-            }
-          } else {
-            setActiveServers(item.servers || []);
+            setSelectedEpisode((prev) => prev || item.episodes[0]);
+          }
+          if (item.servers && item.servers.length > 0) {
+            setActiveServers(item.servers);
           }
         }
       } catch (error) {
-        console.error('Failed to load media details:', error);
+        console.error('Failed to load shell details:', error);
       } finally {
-        setLoading(false);
+        if (active) setLoadingShell(false);
       }
     }
 
-    loadMediaDetails();
+    loadShellDetails();
+
+    return () => {
+      active = false;
+    };
   }, [mediaId]);
 
-  // When user picks an episode in TV series
-  const handleSelectEpisode = async (ep: EpisodeItem) => {
-    setSelectedEpisode(ep);
+  // 2. Fetch Stream Servers asynchronously in background with AbortController
+  useEffect(() => {
+    if (!mediaId || !media) return;
 
-    // If this episode already has extracted direct servers
-    if (ep.servers && ep.servers.length > 0) {
-      setActiveServers(ep.servers);
-    } else {
+    const epId = selectedEpisode?.id;
+    const currentEpisodeServers = selectedEpisode?.servers;
+    const currentMediaServers = media.servers;
+
+    if (currentEpisodeServers && currentEpisodeServers.length > 0) {
+      return;
+    }
+    if (!selectedEpisode && currentMediaServers && currentMediaServers.length > 0) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    async function fetchStreamServers() {
       try {
-        setLoadingEpisode(true);
-        const result = await safeFetchJson<any>(`/api/details?id=${encodeURIComponent(ep.id)}`);
-        if (result.ok && result.data?.success && result.data.data?.servers && result.data.data.servers.length > 0) {
-          ep.servers = result.data.data.servers;
-          setActiveServers(result.data.data.servers);
-        } else {
-          setActiveServers(ep.servers || []);
+        const epParam = epId ? `&episodeId=${encodeURIComponent(epId)}` : '';
+        const res = await safeFetchJson<any>(`/api/stream-servers?id=${encodeURIComponent(mediaId)}${epParam}`, {
+          signal: controller.signal,
+        });
+
+        if (res.ok && res.data?.success && res.data.servers && res.data.servers.length > 0) {
+          const servers: ServerOption[] = res.data.servers;
+          setActiveServers(servers);
+          if (epId) {
+            setSelectedEpisode((prev) => (prev && prev.id === epId ? { ...prev, servers } : prev));
+          } else {
+            setMedia((prev) => (prev ? { ...prev, servers } : null));
+          }
         }
-      } catch (err) {
-        console.warn('Failed to fetch episode details:', err);
-        setActiveServers(ep.servers || []);
-      } finally {
-        setLoadingEpisode(false);
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.warn('Failed to fetch stream servers:', err);
+        }
       }
     }
 
-    // Predictive Next Episode Preloading for seamless binge-watching
+    fetchStreamServers();
+
+    return () => {
+      controller.abort();
+    };
+  }, [mediaId, media, selectedEpisode]);
+
+  // When user picks an episode in TV series
+  const handleSelectEpisode = (ep: EpisodeItem) => {
+    setSelectedEpisode(ep);
+    setActiveServers(ep.servers || []);
+
+    // Predictive Next Episode Preloading
     if (media?.episodes) {
       const currentIndex = media.episodes.findIndex((e) => e.id === ep.id);
       if (currentIndex !== -1 && currentIndex + 1 < media.episodes.length) {
@@ -135,8 +159,7 @@ function WatchContent() {
       }
     }
 
-    // Scroll smoothly to player
-    const playerEl = document.getElementById('cinematic-video-player');
+    const playerEl = document.getElementById('watch-player-section');
     if (playerEl) {
       playerEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -155,22 +178,32 @@ function WatchContent() {
     const targetId = selectedEpisode?.id || media?.id;
     if (!targetId) return false;
     try {
-      const result = await safeFetchJson<any>(`/api/details?id=${encodeURIComponent(targetId)}`);
-      if (result.ok && result.data?.success && result.data.data?.servers && result.data.data.servers.length > 0) {
-        setActiveServers(result.data.data.servers);
-        setSelectedEpisode((prev) => (prev ? { ...prev, servers: result.data.data.servers } : null));
+      setLoadingServers(true);
+      const result = await safeFetchJson<any>(`/api/stream-servers?id=${encodeURIComponent(targetId)}`);
+      if (result.ok && result.data?.success && result.data.servers && result.data.servers.length > 0) {
+        const servers: ServerOption[] = result.data.servers;
+        setActiveServers(servers);
+        if (selectedEpisode) {
+          setSelectedEpisode((prev) => (prev ? { ...prev, servers } : null));
+        } else if (media) {
+          setMedia((prev) => (prev ? { ...prev, servers } : null));
+        }
         return true;
       }
     } catch (e) {
       console.error('Failed to refresh media link:', e);
+    } finally {
+      setLoadingServers(false);
     }
     return false;
   };
 
-  if (loading) {
+  if (loadingShell) {
     return (
       <div className="max-w-6xl mx-auto px-4 pt-8 space-y-6 animate-pulse" dir="rtl">
-        <div className="aspect-video w-full rounded-2xl bg-neutral-900 border border-neutral-800" />
+        <div className="aspect-video w-full rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center">
+          <div className="w-8 h-8 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
+        </div>
         <div className="h-8 w-1/3 bg-neutral-900 rounded-lg" />
         <div className="h-20 w-full bg-neutral-900 rounded-xl" />
       </div>
@@ -203,12 +236,23 @@ function WatchContent() {
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-8" dir="rtl">
       {/* 1. Cinematic Video Player */}
       <section id="watch-player-section">
-        <VideoPlayer
-          servers={activeServers}
-          title={currentPlayingTitle}
-          poster={media.banner || media.poster}
-          onRefreshLink={handleRefreshCurrentMedia}
-        />
+        {activeServers.length > 0 ? (
+          <VideoPlayer
+            servers={activeServers}
+            title={currentPlayingTitle}
+            poster={media.banner || media.poster}
+            mediaId={selectedEpisode?.id || media.id}
+            onRefreshLink={handleRefreshCurrentMedia}
+          />
+        ) : (
+          <div className="relative aspect-video w-full rounded-2xl bg-neutral-900/90 border border-neutral-800/80 overflow-hidden flex flex-col items-center justify-center p-6 text-center space-y-3 shadow-2xl">
+            <div className="w-10 h-10 border-3 border-red-600 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm sm:text-base font-bold text-neutral-200">جاري تجهيز سيرفرات البث السريعة...</p>
+            <p className="text-xs text-neutral-400 max-w-sm">
+              يتم الآن استخراج روابط التشغيل المباشرة بالخلفية. سيتم بدء التشغيل تلقائياً خلال لحظات.
+            </p>
+          </div>
+        )}
       </section>
 
       {/* 2. Media Header & Controls */}

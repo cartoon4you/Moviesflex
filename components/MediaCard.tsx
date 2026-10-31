@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Star, Bookmark, Play, Check, Zap } from 'lucide-react';
 import { MediaItem } from '@/lib/types';
 import { useWatchlist } from '@/contexts/WatchlistContext';
-import { preloadImage, preloadMediaDetails } from '@/lib/preload-manager';
+import { preloadImage, preloadMediaDetails, setCachedMediaDetails } from '@/lib/preload-manager';
 
 interface MediaCardProps {
   item: MediaItem;
@@ -20,8 +20,11 @@ export default function MediaCard({ item }: MediaCardProps) {
   const { isInWatchlist, addToWatchlist, removeFromWatchlist } = useWatchlist();
   const saved = isInWatchlist(item.id);
 
-  // 1. Viewport Anticipation: Preload poster as soon as the card is within 250px of the viewport
+  // 1. Viewport Anticipation: Preload poster and register cache item immediately
   useEffect(() => {
+    // Seed media basic data into client cache for 0ms watch page load
+    setCachedMediaDetails(item.id, item);
+
     const cardEl = cardRef.current;
     if (!cardEl || !item.poster || typeof IntersectionObserver === 'undefined') return;
 
@@ -29,6 +32,7 @@ export default function MediaCard({ item }: MediaCardProps) {
       (entries) => {
         if (entries[0].isIntersecting) {
           preloadImage(item.poster, 'auto');
+          router.prefetch(`/watch?id=${encodeURIComponent(item.id)}`);
           observer.disconnect();
         }
       },
@@ -37,16 +41,16 @@ export default function MediaCard({ item }: MediaCardProps) {
 
     observer.observe(cardEl);
     return () => observer.disconnect();
-  }, [item.poster]);
+  }, [item, router]);
 
   // 2. Hover / Touch Interaction Preloading (Warm up Watch Page & Video Chunks)
   const handleInteractionPreload = () => {
-    // A. Preload high priority poster and backdrop
+    setCachedMediaDetails(item.id, item);
+    router.prefetch(`/watch?id=${encodeURIComponent(item.id)}`);
+
     if (item.poster) preloadImage(item.poster, 'high');
     if (item.banner) preloadImage(item.banner, 'auto');
 
-    // Keep lightweight details warm; do not download video bytes just because a card is hovered/touched.
-    // Video requests compete with page images and user-initiated navigation on slower connections.
     preloadMediaDetails(item.id);
   };
 
@@ -72,7 +76,7 @@ export default function MediaCard({ item }: MediaCardProps) {
     >
       <Link
         href={`/watch?id=${encodeURIComponent(item.id)}`}
-        prefetch={false}
+        prefetch={true}
         className="block relative aspect-[2/3] w-full overflow-hidden bg-neutral-950"
       >
         {/* Placeholder skeleton while loading */}

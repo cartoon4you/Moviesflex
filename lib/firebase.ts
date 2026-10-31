@@ -1,7 +1,12 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, setLogLevel } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+
+// Suppress non-fatal Firestore network transition info/warnings (e.g. 10s offline mode transition)
+try {
+  setLogLevel('error');
+} catch {}
 
 const isNewApp = !getApps().length;
 const app = isNewApp ? initializeApp(firebaseConfig) : getApp();
@@ -11,7 +16,7 @@ export const db = isNewApp
   ? initializeFirestore(
       app,
       {
-        experimentalForceLongPolling: true,
+        experimentalAutoDetectLongPolling: true,
       },
       firebaseConfig.firestoreDatabaseId
     )

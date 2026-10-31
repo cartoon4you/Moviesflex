@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Play, Bookmark, Star, ChevronLeft, ChevronRight, Check, Sparkles, Zap } from 'lucide-react';
 import { MediaItem } from '@/lib/types';
 import { useWatchlist } from '@/contexts/WatchlistContext';
-import { preloadImage, preloadMediaDetails } from '@/lib/preload-manager';
+import { preloadImage, preloadMediaDetails, setCachedMediaDetails } from '@/lib/preload-manager';
 
 interface HeroSliderProps {
   items: MediaItem[];
@@ -24,11 +24,20 @@ export default function HeroSlider({ items }: HeroSliderProps) {
   const current = slides[currentIndex] || null;
   const saved = current ? isInWatchlist(current.id) : false;
 
+  // Seed all slides into cache for instant opening
+  useEffect(() => {
+    slides.forEach((item) => {
+      setCachedMediaDetails(item.id, item);
+      router.prefetch(`/watch?id=${encodeURIComponent(item.id)}`);
+    });
+  }, [slides, router]);
+
   const handleWarmWatch = useCallback(() => {
     if (!current) return;
+    setCachedMediaDetails(current.id, current);
+    router.prefetch(`/watch?id=${encodeURIComponent(current.id)}`);
     preloadMediaDetails(current.id);
-
-  }, [current]);
+  }, [current, router]);
 
   // Predictive Preloading: Preload the next & previous slide images and current video stream
   useEffect(() => {

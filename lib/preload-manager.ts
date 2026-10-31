@@ -212,6 +212,16 @@ export function getCachedMediaDetails(mediaId: string): any | null {
   return detailsCache.get(mediaId) || null;
 }
 
+export function setCachedMediaDetails(mediaId: string, item: any): void {
+  if (!mediaId || !item || typeof window === 'undefined') return;
+  const existing = detailsCache.get(mediaId);
+  // Keep existing detailed servers/episodes if available
+  if (existing && existing.servers && existing.servers.length > 0 && (!item.servers || item.servers.length === 0)) {
+    return;
+  }
+  detailsCache.set(mediaId, { ...existing, ...item });
+}
+
 /**
  * Preload an entire MediaItem (Poster, Banner, and initial video server)
  */

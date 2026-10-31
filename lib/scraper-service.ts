@@ -112,8 +112,8 @@ export const homeContentCache = new ConcurrentMemoryCache<any>(30 * 60 * 1000, 2
 // 4-hour fresh, 7-day stale for parsed series episodes
 export const seriesEpisodesCache = new ConcurrentMemoryCache<EpisodeItem[]>(4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
 
-// 2-hour fresh, 24-hour stale for parsed direct video streams and servers
-export const videoStreamsCache = new ConcurrentMemoryCache<ServerOption[]>(2 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+// 45-minute fresh, 2-hour stale for parsed direct video streams and servers (downet signed URLs expire quickly)
+export const videoStreamsCache = new ConcurrentMemoryCache<ServerOption[]>(45 * 60 * 1000, 2 * 60 * 60 * 1000);
 
 // 4-hour fresh, 7-day stale for full media details
 export const mediaDetailsCache = new ConcurrentMemoryCache<MediaItem>(4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
@@ -254,14 +254,14 @@ function parseEntryBoxes($: cheerio.CheerioAPI, defaultType: 'movie' | 'series' 
         {
           name: 'سيرفر يمن فلکس الرئيسي 1080p FHD',
           quality: 1080,
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+          url: 'https://vjs.zencdn.net/v/oceans.mp4',
           referer: 'https://akwam.ss/',
           type: 'mp4',
         },
         {
           name: 'سيرفر سريع 720p HD',
           quality: 720,
-          url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+          url: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
           referer: 'https://akwam.ss/',
           type: 'mp4',
         },
@@ -366,19 +366,8 @@ export async function getHomeContent(): Promise<{
     return fsEntry.data;
   }
 
-  // Tier 3: Cold Start / Initial Cache Miss - execute or await in-flight
-  if (pendingRequests.has(cacheKey)) {
-    return pendingRequests.get(cacheKey);
-  }
-
-  const bgPromise = triggerBackgroundRevalidation();
-  if (bgPromise) {
-    const liveOrTimeout = await Promise.race([
-      bgPromise,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1200)),
-    ]);
-    if (liveOrTimeout) return liveOrTimeout;
-  }
+  // Tier 3: Cold Start / Initial Cache Miss - trigger background revalidation without blocking
+  triggerBackgroundRevalidation();
 
   return {
     featured: SAMPLE_CATALOG.filter((i) => i.isFeatured),
@@ -632,6 +621,139 @@ export function parseMediaId(rawId: string): string {
   }
   decoded = decoded.startsWith('/') ? decoded : `/${decoded}`;
   return decoded;
+}
+
+/**
+ * Invalidate streams cache for a given media ID (e.g. when a 403 expired link occurs)
+ */
+export function invalidateStreams(id: string) {
+  if (!id) return;
+  const decodedPath = parseMediaId(id);
+  videoStreamsCache.delete(id);
+  videoStreamsCache.delete(decodedPath);
+  const cachedMedia = mediaDetailsCache.get(id) || mediaDetailsCache.get(decodedPath);
+  if (cachedMedia) {
+    cachedMedia.servers = [];
+  }
+}
+
+/**
+ * Rapid Shell Details Extractor (<300ms response time)
+ * Returns metadata (title, poster, story, rating, year, episodes list) without waiting
+ * for deep multi-page video stream extraction.
+ */
+export async function getMediaDetailsShell(id: string): Promise<MediaItem | null> {
+  const decodedPath = parseMediaId(id);
+  const cacheKey = `media_shell_${id}`;
+
+  // 1. Check in-memory cache
+  const cached =
+    mediaDetailsCache.get(cacheKey) ||
+    mediaDetailsCache.get(id) ||
+    mediaDetailsCache.get(decodedPath);
+
+  if (cached) {
+    return {
+      ...cached,
+      servers: cached.servers || [],
+    };
+  }
+
+  // 2. Check sample catalog
+  const sampleFound = SAMPLE_CATALOG.find((item) => item.id === id);
+
+  try {
+    const fullUrl = `${BASE_URL}${decodedPath.startsWith('/') ? decodedPath : `/${decodedPath}`}`;
+    // Fast HTML fetch (2s timeout max)
+    const $ = await fetchHTML(fullUrl, STANDARD_TIMEOUT_MS);
+    if ($) {
+      const title =
+        $('h1.entry-title, .entry-title, h1.title').first().text().trim() ||
+        sampleFound?.title ||
+        'عمل سينمائي';
+
+      const imgEl = $('.poster img, .entry-image img, picture img').first();
+      let poster = imgEl.attr('data-src') || imgEl.attr('src') || sampleFound?.poster || '';
+      if (poster.includes('placeholder.png') && imgEl.attr('data-src')) {
+        poster = imgEl.attr('data-src') || '';
+      }
+      if (poster && !poster.startsWith('http')) {
+        poster = `${BASE_URL}${poster}`;
+      }
+
+      const story =
+        $('.story, .entry-story, .widget-body p').first().text().trim() ||
+        sampleFound?.story ||
+        `شاهد الآن ${title} بجودة عالية مع خيارات مشاهدة متعددة وروابط تحميل مباشرة.`;
+
+      const rating = $('.rating, .rate').first().text().replace(/[^\d.]/g, '').trim() || sampleFound?.rating || '8.2';
+      const year = $('.badge-secondary, .year, .date').first().text().trim() || sampleFound?.year || '2025';
+
+      const isEpisode = fullUrl.includes('/episode/');
+      const isSeries = (fullUrl.includes('/series/') || title.includes('مسلسل')) && !isEpisode;
+
+      let episodes: EpisodeItem[] = [];
+      if (isSeries) {
+        const cachedEpisodes = seriesEpisodesCache.get(id) || seriesEpisodesCache.get(decodedPath);
+        if (cachedEpisodes && cachedEpisodes.length > 0) {
+          episodes = cachedEpisodes;
+        } else {
+          const seen = new Set<string>();
+          $('a[href*="/episode/"]').each((idx, el) => {
+            const epHref = $(el).attr('href') || '';
+            const epText = $(el).text().trim();
+            if (epHref && !seen.has(epHref)) {
+              seen.add(epHref);
+              const numMatch = (epText + ' ' + epHref).match(/(?:الحلقة|حلقة|episode)[\s\-_]*(\d+)/i) || epHref.match(/(\d+)$/);
+              const epNum = numMatch ? parseInt(numMatch[1]) : idx + 1;
+              const epId = encodeURIComponent(epHref.replace(BASE_URL, '')).replace(/%/g, '_');
+
+              episodes.push({
+                id: epId,
+                episodeNumber: epNum,
+                title: epText || `الحلقة ${epNum}`,
+                duration: '45 دقيقة',
+                servers: [],
+              });
+            }
+          });
+          episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+          if (episodes.length > 0) {
+            seriesEpisodesCache.set(id, episodes);
+            seriesEpisodesCache.set(decodedPath, episodes);
+          }
+        }
+      }
+
+      const item: MediaItem = {
+        id,
+        title,
+        poster,
+        banner: poster,
+        story,
+        rating,
+        year,
+        type: isSeries ? 'series' : 'movie',
+        category: isSeries ? 'مسلسلات' : 'أفلام',
+        servers: [],
+        episodes,
+      };
+
+      mediaDetailsCache.set(cacheKey, item, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+      mediaDetailsCache.set(id, item, 4 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000);
+      return item;
+    }
+  } catch (error) {
+    console.warn(`[Scraper] Shell extraction failed for ${id}:`, error);
+  }
+
+  if (sampleFound) {
+    const shellSample = { ...sampleFound, servers: [] };
+    mediaDetailsCache.set(id, shellSample);
+    return shellSample;
+  }
+
+  return null;
 }
 
 /**
@@ -951,14 +1073,14 @@ async function fetchMediaDetailsFromSource(
             {
               name: 'سيرفر عالي (1080p Full HD)',
               quality: 1080,
-              url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+              url: 'https://vjs.zencdn.net/v/oceans.mp4',
               referer: `${BASE_URL}/`,
               type: 'mp4',
             },
             {
               name: 'سيرفر قياسي (720p HD)',
               quality: 720,
-              url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+              url: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
               referer: `${BASE_URL}/`,
               type: 'mp4',
             }
