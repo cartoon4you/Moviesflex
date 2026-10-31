@@ -1,4 +1,4 @@
 {
-  "/api/proxy/video/route": "app/api/proxy/video/route.js",
+  "/api/details/route": "app/api/details/route.js",
   "/page": "app/page.js"
 }
